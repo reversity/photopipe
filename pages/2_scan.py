@@ -213,6 +213,41 @@ def scan_photos(batch: Batch, resolution: int, duplex: bool):
         return 0
 
 
+def run_ai_analysis(batch: Batch):
+    """Run AI analysis on batch photos to estimate dates."""
+    from photopipe.ai_dating import (
+        estimate_batch_date_with_ai,
+        apply_ai_date_to_batch,
+        is_ai_dating_available,
+    )
+
+    db = st.session_state.db
+    photos = db.get_photos_by_batch(batch.id)
+
+    if not photos:
+        st.warning("No photos to analyze")
+        return
+
+    if not is_ai_dating_available():
+        st.error("AI dating not available. Check your Anthropic API key in Setup.")
+        return
+
+    with st.spinner("🤖 Analyzing photos with AI..."):
+        estimate = estimate_batch_date_with_ai(batch, photos, db)
+
+        if estimate and estimate.year:
+            # Apply to photos without dates
+            updated = apply_ai_date_to_batch(batch, estimate, photos, db)
+
+            st.success(f"✅ AI estimates: **{estimate.year}** ({estimate.confidence.value} confidence)")
+            st.write("**Evidence:**")
+            for ev in estimate.evidence[:3]:
+                st.write(f"- {ev}")
+            st.caption(f"Applied to {updated} photos")
+        else:
+            st.warning("AI couldn't determine dates from these photos")
+
+
 def show_photos(batch: Batch):
     db = st.session_state.db
     photos = db.get_photos_by_batch(batch.id)
@@ -223,6 +258,13 @@ def show_photos(batch: Batch):
 
     st.subheader(f"📸 {len(photos)} Photos")
 
+    # AI Analysis button
+    col1, col2 = st.columns([2, 1])
+    with col2:
+        if st.button("🤖 Analyze with AI", use_container_width=True):
+            run_ai_analysis(batch)
+            st.rerun()
+
     # Grid
     cols = st.columns(6)
     for i, photo in enumerate(photos[:18]):
@@ -231,7 +273,11 @@ def show_photos(batch: Batch):
                 if photo.front_path and photo.front_path.exists():
                     thumb = generate_thumbnail(photo.front_path, size=120)
                     st.image(thumb, use_container_width=True)
-                st.caption(f"#{photo.sequence_num}")
+                # Show date if available
+                if photo.extracted_date:
+                    st.caption(f"#{photo.sequence_num} 📅{photo.extracted_date.year}")
+                else:
+                    st.caption(f"#{photo.sequence_num}")
             except:
                 st.caption(f"#{photo.sequence_num}")
 
@@ -239,6 +285,7 @@ def show_photos(batch: Batch):
         st.caption(f"+ {len(photos) - 18} more")
 
     # Actions
+    st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔍 Review Metadata", type="primary", use_container_width=True):
