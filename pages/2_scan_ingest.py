@@ -322,6 +322,14 @@ def scanner_control(batch: Batch):
     """Scanner control section for directly scanning photos."""
     st.subheader("📷 Scanner Control")
 
+    # Initialize scanner session state
+    if "last_scanned_sequence" not in st.session_state:
+        st.session_state.last_scanned_sequence = None
+    if "scan_error" not in st.session_state:
+        st.session_state.scan_error = None
+    if "scanned_this_session" not in st.session_state:
+        st.session_state.scanned_this_session = 0
+
     # Check SANE availability
     if not check_sane_installed():
         st.error("""
@@ -389,24 +397,82 @@ def scanner_control(batch: Batch):
 
     st.markdown("---")
 
-    # Scan button
+    # Scan status and jam recovery
     db = st.session_state.db
     input_folder = batch.input_folder or config.paths.input_folder
-    start_sequence = db.get_next_sequence_num(batch.id)
+    default_start_sequence = db.get_next_sequence_num(batch.id)
+
+    # Show jam recovery UI if there was an error or previous scan
+    if st.session_state.scan_error or st.session_state.last_scanned_sequence:
+        st.warning("⚠️ **Jam Recovery Mode**")
+
+        if st.session_state.scan_error:
+            st.error(f"Last error: {st.session_state.scan_error}")
+
+        if st.session_state.last_scanned_sequence:
+            st.info(f"""
+            **Last successful scan:** #{st.session_state.last_scanned_sequence}
+            **Photos scanned this session:** {st.session_state.scanned_this_session}
+
+            To resume after clearing a jam:
+            1. Remove jammed photo from scanner
+            2. Note which photo jammed (check the last scanned number above)
+            3. Click "Resume Scanning" to continue from the next photo
+            """)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Resume Scanning", type="primary"):
+                st.session_state.scan_error = None
+                # Will use the resume sequence below
+        with col2:
+            if st.button("🔁 Start Fresh"):
+                st.session_state.last_scanned_sequence = None
+                st.session_state.scan_error = None
+                st.session_state.scanned_this_session = 0
+                st.rerun()
+
+    # Determine starting sequence
+    if st.session_state.last_scanned_sequence:
+        resume_sequence = st.session_state.last_scanned_sequence + 1
+    else:
+        resume_sequence = default_start_sequence
 
     st.write(f"**Output folder:** `{input_folder}`")
-    st.write(f"**Starting sequence:** {start_sequence}")
 
-    if st.button("🚀 Start Scanning", type="primary", disabled=st.session_state.processing):
+    # Allow manual sequence override for recovery
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        start_sequence = st.number_input(
+            "Starting sequence number",
+            min_value=1,
+            value=resume_sequence,
+            help="Adjust this if you need to re-scan specific photos or skip ahead",
+        )
+    with col2:
+        st.write("")  # Spacer
+        st.caption(f"Default: {default_start_sequence}")
+
+    # Scan button
+    button_label = "🔄 Resume Scanning" if st.session_state.last_scanned_sequence else "🚀 Start Scanning"
+
+    if st.button(button_label, type="primary", disabled=st.session_state.processing, key="scan_btn"):
         st.session_state.processing = True
+        st.session_state.scan_error = None
 
         progress_bar = st.progress(0)
         status_text = st.empty()
+        scanned_count = 0
 
         def update_progress(count, total):
+            nonlocal scanned_count
+            scanned_count = count
             if total:
                 progress_bar.progress(count / total)
-            status_text.text(f"Scanned {count} photos...")
+            status_text.text(f"Scanned {count} photos... (Current: #{start_sequence + count - 1})")
+            # Update session state so we can recover from jams
+            st.session_state.last_scanned_sequence = start_sequence + count - 1
+            st.session_state.scanned_this_session += 1
 
         try:
             scanner = Scanner(device_name=device_name)
@@ -424,20 +490,59 @@ def scanner_control(batch: Batch):
 
             if results:
                 st.success(f"✅ Scanned {len(results)} photos!")
+                st.session_state.last_scanned_sequence = results[-1].sequence_num
 
                 # Auto-ingest the scanned photos
                 with st.spinner("Ingesting scanned photos..."):
                     new_photos = pair_scans(input_folder, batch, db)
 
                 st.success(f"✅ Ingested {len(new_photos)} photo pairs into batch!")
+
+                # Clear jam recovery state on success
+                st.session_state.scan_error = None
                 st.rerun()
             else:
                 st.info("No photos were scanned. Make sure photos are loaded in the ADF.")
 
         except Exception as e:
-            st.error(f"Scanning failed: {e}")
+            error_msg = str(e)
+            st.session_state.scan_error = error_msg
+
+            # Check if any photos were scanned before the error
+            if scanned_count > 0:
+                st.warning(f"""
+                ⚠️ **Scanning interrupted after {scanned_count} photos**
+
+                Last successful scan: #{st.session_state.last_scanned_sequence}
+
+                **To recover:**
+                1. Clear the paper jam
+                2. Remove the photo that jammed
+                3. Click "Resume Scanning" to continue from #{st.session_state.last_scanned_sequence + 1}
+                """)
+
+                # Try to ingest what we got
+                with st.spinner("Ingesting photos scanned before error..."):
+                    try:
+                        new_photos = pair_scans(input_folder, batch, db)
+                        if new_photos:
+                            st.success(f"✅ Saved {len(new_photos)} photos scanned before the jam")
+                    except Exception:
+                        pass
+            else:
+                st.error(f"Scanning failed: {error_msg}")
 
         st.session_state.processing = False
+
+    # Show reset button if we have scan history
+    if st.session_state.scanned_this_session > 0:
+        st.markdown("---")
+        st.caption(f"Session total: {st.session_state.scanned_this_session} photos scanned")
+        if st.button("✅ Finished Scanning - Clear Session", key="clear_session"):
+            st.session_state.last_scanned_sequence = None
+            st.session_state.scan_error = None
+            st.session_state.scanned_this_session = 0
+            st.rerun()
 
 
 def batch_progress(batch: Batch):
