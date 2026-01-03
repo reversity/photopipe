@@ -45,10 +45,40 @@ def get_batch():
     return next((b for b in batches if b.name == selected), None)
 
 
+def auto_rotate_image(path: Path):
+    """Auto-rotate image based on dimensions (landscape photos should be horizontal)."""
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        # If image is taller than wide, rotate 90 degrees
+        if img.height > img.width:
+            img = img.rotate(-90, expand=True)
+            img.save(path, quality=95)
+    except Exception:
+        pass  # Skip rotation on error
+
+
+def calculate_photo_date(batch: Batch, sequence: int, total: int):
+    """Calculate a suggested date for a photo based on batch range and sequence."""
+    if not batch.date_start:
+        return None
+
+    if not batch.date_end or batch.date_start == batch.date_end:
+        return batch.date_start
+
+    # Spread photos evenly across the date range
+    from datetime import timedelta
+    days_span = (batch.date_end - batch.date_start).days
+    if total <= 1:
+        return batch.date_start
+
+    day_offset = int((sequence - 1) * days_span / (total - 1)) if total > 1 else 0
+    return batch.date_start + timedelta(days=day_offset)
+
+
 def scan_photos(batch: Batch, resolution: int, duplex: bool):
     """Scan photos and directly add them to the database."""
     db = st.session_state.db
-    config = get_config()
 
     # Ensure input folder exists
     input_folder = Path.home() / "Pictures" / "Scanner_Input"
@@ -88,19 +118,25 @@ def scan_photos(batch: Batch, resolution: int, duplex: bool):
             capture_output=True,
             text=True,
             timeout=600,
+            env={**subprocess.os.environ, "PATH": "/opt/homebrew/bin:" + subprocess.os.environ.get("PATH", "")},
         )
 
-        stderr = result.stderr.lower()
+        stderr = result.stderr.lower() if result.stderr else ""
+        stdout = result.stdout if result.stdout else ""
+
+        # Debug: show what happened
+        st.caption(f"Scanner output: {result.returncode}")
 
         # Find scanned files
         scanned = sorted(input_folder.glob(f"{batch_prefix}_*.jpg"))
 
         if not scanned:
-            status.warning("No photos scanned. Make sure photos are in the scanner.")
+            status.warning(f"No photos found. Scanner said: {result.stderr[:200] if result.stderr else 'nothing'}")
             return 0
 
         # Process files: pair fronts and backs, add to database
         photos_added = 0
+        total_photos = len(scanned) // 2 if duplex else len(scanned)
 
         if duplex:
             # In duplex mode, files alternate: front, back, front, back
@@ -117,6 +153,12 @@ def scan_photos(batch: Batch, resolution: int, duplex: bool):
                 if back_temp and back_path:
                     shutil.move(back_temp, back_path)
 
+                # Auto-rotate front
+                auto_rotate_image(front_path)
+
+                # Calculate suggested date
+                suggested_date = calculate_photo_date(batch, seq, next_seq + total_photos - 1)
+
                 # Add to database
                 photo = PhotoPair(
                     batch_id=batch.id,
@@ -124,6 +166,7 @@ def scan_photos(batch: Batch, resolution: int, duplex: bool):
                     front_path=front_path,
                     back_path=back_path,
                     status=PhotoStatus.INGESTED,
+                    extracted_date=suggested_date,  # Set initial suggested date
                 )
                 db.create_photo(photo)
                 photos_added += 1
@@ -134,12 +177,19 @@ def scan_photos(batch: Batch, resolution: int, duplex: bool):
                 front_path = input_folder / f"photo_{seq:04d}.jpg"
                 shutil.move(front_temp, front_path)
 
+                # Auto-rotate
+                auto_rotate_image(front_path)
+
+                # Calculate suggested date
+                suggested_date = calculate_photo_date(batch, seq, next_seq + total_photos - 1)
+
                 photo = PhotoPair(
                     batch_id=batch.id,
                     sequence_num=seq,
                     front_path=front_path,
                     back_path=None,
                     status=PhotoStatus.INGESTED,
+                    extracted_date=suggested_date,
                 )
                 db.create_photo(photo)
                 photos_added += 1
@@ -158,6 +208,8 @@ def scan_photos(batch: Batch, resolution: int, duplex: bool):
         return 0
     except Exception as e:
         status.error(f"Scan error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         return 0
 
 
