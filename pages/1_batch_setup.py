@@ -11,11 +11,6 @@ from photopipe.config import get_config
 from photopipe.database import Database
 from photopipe.models import Batch, BatchTemplate, BatchStatus
 from photopipe.geocoding import geocode_location
-from photopipe.scanner import (
-    Scanner,
-    list_scanners,
-    check_sane_installed,
-)
 from photopipe.setup import load_settings
 
 
@@ -32,8 +27,6 @@ def init_session_state():
     if "editing_batch_id" not in st.session_state:
         st.session_state.editing_batch_id = None
 
-    if "scanning" not in st.session_state:
-        st.session_state.scanning = False
 
 
 def parse_approximate_date(text: str) -> tuple[date | None, date | None]:
@@ -113,139 +106,6 @@ def parse_approximate_date(text: str) -> tuple[date | None, date | None]:
 
     # Just year
     return date(year, 1, 1), date(year, 12, 31)
-
-
-def scanner_control():
-    """Scanner control section - scan photos directly."""
-    st.subheader("📷 Scanner Control")
-
-    with st.expander("💡 Scanning tips", expanded=False):
-        st.markdown("""
-        **Before scanning:**
-        - Clean the scanner glass and rollers
-        - Remove any dust or debris from photos
-        - Stack photos neatly in the document feeder
-
-        **Recommended settings:**
-        - **600 DPI** - best balance of quality and file size
-        - **Duplex ON** - captures dates/notes on photo backs
-        - **Color** - even for B&W photos (preserves sepia tones)
-
-        **Don't have a scanner connected?**
-        Use the Epson FastFoto software to scan, then PhotoPipe will import from the output folder.
-        """)
-
-    config = get_config()
-
-    # Check SANE availability
-    if not check_sane_installed():
-        st.warning("""
-        **SANE not detected.** Scanner control requires SANE backends.
-
-        Install with: `brew install sane-backends`
-
-        Alternatively, use the Epson FastFoto software to scan, then import from the output folder.
-        """)
-        # Still show the output folder info
-        st.write(f"**Scanner output folder:** `{config.paths.input_folder}`")
-        return
-
-    # List available scanners
-    with st.spinner("Detecting scanners..."):
-        devices = list_scanners()
-
-    if not devices:
-        st.info("""
-        **No scanners detected.** Make sure your scanner is:
-        - Connected via USB or WiFi
-        - Powered on
-
-        You can also use the Epson FastFoto software to scan to the input folder.
-        """)
-        st.write(f"**Scanner output folder:** `{config.paths.input_folder}`")
-        return
-
-    # Scanner selection
-    device_options = {f"{d.vendor} {d.model}": d.name for d in devices}
-
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        selected_device = st.selectbox(
-            "Select Scanner",
-            options=list(device_options.keys()),
-            index=0,
-        )
-
-    device_name = device_options[selected_device]
-
-    # Scan settings
-    st.write("**Scan Settings**")
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        resolution = st.selectbox(
-            "Resolution (DPI)",
-            options=[300, 600, 1200],
-            index=1,  # Default 600
-        )
-
-    with col2:
-        duplex = st.checkbox("Scan Backs (Duplex)", value=True)
-
-    with col3:
-        mode = st.selectbox(
-            "Color Mode",
-            options=["color", "gray"],
-            index=0,
-        )
-
-    with col4:
-        name_prefix = st.text_input(
-            "File Prefix",
-            value="photo",
-            help="Scanned files will be named {prefix}_001.jpg, etc.",
-        )
-
-    # Output folder
-    output_folder = config.paths.input_folder
-    st.write(f"**Output folder:** `{output_folder}`")
-
-    # Count existing files to determine sequence start
-    existing_files = list(output_folder.glob(f"{name_prefix}_*.jpg")) if output_folder.exists() else []
-    start_sequence = len([f for f in existing_files if "_b" not in f.name]) + 1
-    st.caption(f"Next sequence number: {start_sequence}")
-
-    # Scan button
-    if st.button("🚀 Start Scanning", type="primary", disabled=st.session_state.scanning):
-        st.session_state.scanning = True
-
-        try:
-            # Ensure output folder exists
-            output_folder.mkdir(parents=True, exist_ok=True)
-
-            scanner = Scanner(device_name=device_name)
-
-            with st.spinner("Scanning... Place photos in the ADF."):
-                results = scanner.scan_batch(
-                    output_folder=output_folder,
-                    name_prefix=name_prefix,
-                    start_sequence=start_sequence,
-                    resolution=resolution,
-                    duplex=duplex,
-                    mode=mode,
-                )
-
-            if results:
-                st.success(f"✅ Scanned {len(results)} photos to `{output_folder}`")
-                st.info("Now create a batch below to process these photos.")
-            else:
-                st.info("No photos scanned. Make sure photos are loaded in the ADF.")
-
-        except Exception as e:
-            st.error(f"Scanning failed: {e}")
-
-        st.session_state.scanning = False
 
 
 def create_batch_form():
@@ -591,12 +451,7 @@ def main():
     init_session_state()
 
     st.title("📁 Batch Setup")
-    st.write("Scan photos and create batches for processing.")
-
-    # Scanner control at the top
-    scanner_control()
-
-    st.markdown("---")
+    st.write("Create and manage batches of photos for processing.")
 
     # Show edit form if editing, otherwise show create form
     if st.session_state.editing_batch_id:
