@@ -342,6 +342,7 @@ class Scanner:
             batch_pattern = str(temp_path / "scan_%04d.jpg")
             cmd = base_cmd + [f"--batch={batch_pattern}"]
 
+            scan_error = None
             try:
                 process = subprocess.Popen(
                     cmd,
@@ -353,14 +354,24 @@ class Scanner:
                 # Wait for completion
                 stdout, stderr = process.communicate(timeout=600)
 
-                if process.returncode != 0 and "out of documents" not in stderr.lower():
-                    raise RuntimeError(f"scanimage failed: {stderr}")
+                # Check for errors, but don't fail immediately - we may have partial results
+                if process.returncode != 0:
+                    stderr_lower = stderr.lower()
+                    # These are acceptable "errors" - scanning completed normally
+                    if "out of documents" in stderr_lower or "no more documents" in stderr_lower:
+                        pass  # Normal end of batch
+                    elif "jammed" in stderr_lower or "jam" in stderr_lower:
+                        # Jam occurred - save error but continue to process scanned files
+                        scan_error = "Paper jam detected"
+                    else:
+                        # Unknown error - still try to save any scanned files
+                        scan_error = stderr.strip()
 
             except subprocess.TimeoutExpired:
                 process.kill()
-                raise RuntimeError("Scanning timed out")
+                scan_error = "Scanning timed out"
 
-            # Process scanned files
+            # Process scanned files (even if there was an error, we may have partial results)
             scanned_files = sorted(temp_path.glob("scan_*.jpg"))
 
             if duplex:
@@ -405,6 +416,13 @@ class Scanner:
                         progress_callback(sequence - start_sequence + 1, None)
 
                     sequence += 1
+
+            # If there was a scan error but we got some files, report both
+            if scan_error and results:
+                # Raise a special error that includes the count of successful scans
+                raise RuntimeError(f"{scan_error} (saved {len(results)} photos before error)")
+            elif scan_error and not results:
+                raise RuntimeError(scan_error)
 
         return results
 
