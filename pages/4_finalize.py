@@ -119,7 +119,6 @@ def output_preview(batch: Batch):
     st.subheader("📁 Output Preview")
 
     config = get_config()
-    db = st.session_state.db
 
     # Calculate output folder
     output_folder = generate_output_folder(batch)
@@ -127,38 +126,35 @@ def output_preview(batch: Batch):
     st.write("**Output Location:**")
     st.code(str(output_folder))
 
-    # Show folder structure
-    st.write("**Folder Structure:**")
+    # Show folder structure - fronts only
+    batch_name_safe = sanitize_filename(batch.name)
+    date_str = batch.date_start.strftime('%Y-%m-%d') if batch.date_start else 'YYYY-MM-DD'
+
+    st.write("**Output Files (fronts only, with embedded metadata):**")
     structure = f"""
 {config.paths.output_folder}/
 ├── {output_folder.relative_to(config.paths.output_folder)}/
-│   ├── {batch.date_start.strftime('%Y-%m-%d') if batch.date_start else 'YYYY-MM-DD'}_{sanitize_filename(batch.name)}_0001_front.jpg
-│   ├── {batch.date_start.strftime('%Y-%m-%d') if batch.date_start else 'YYYY-MM-DD'}_{sanitize_filename(batch.name)}_0001_back.jpg
+│   ├── PP_{date_str}_{batch_name_safe}_0001.jpg
+│   ├── PP_{date_str}_{batch_name_safe}_0002.jpg
+│   ├── PP_{date_str}_{batch_name_safe}_0003.jpg
 │   ├── ...
 │   └── _batch_report.json
 └── _archive/
-    └── {sanitize_filename(batch.name)}/
-        └── (original files)
+    └── {batch_name_safe}/
+        └── (original fronts + backs preserved)
     """
     st.code(structure)
 
+    st.caption("PP_ prefix ensures filenames won't conflict with iPhone or camera photos.")
+
     # Archive settings
-    st.write("**Archive Settings:**")
-    col1, col2 = st.columns(2)
+    st.write("**Settings:**")
+    preserve = st.checkbox(
+        "Keep original files in archive (including backs)",
+        value=config.output.preserve_originals,
+    )
 
-    with col1:
-        preserve = st.checkbox(
-            "Preserve original files in archive",
-            value=config.output.preserve_originals,
-        )
-
-    with col2:
-        web_copies = st.checkbox(
-            "Generate web-sized copies",
-            value=config.output.generate_web_copies,
-        )
-
-    return preserve, web_copies
+    return preserve
 
 
 def finalize_controls(batch: Batch, stats: dict):
@@ -324,7 +320,7 @@ def main():
     st.markdown("---")
 
     # Output preview
-    preserve, web_copies = output_preview(batch)
+    preserve = output_preview(batch)
 
     st.markdown("---")
 

@@ -51,7 +51,7 @@ def sanitize_filename(name: str) -> str:
 def generate_output_filename(
     photo: PhotoPair,
     batch: Batch,
-    side: str,  # "front" or "back"
+    side: str = "front",  # "front" or "back"
 ) -> str:
     """
     Generate output filename based on template.
@@ -59,7 +59,7 @@ def generate_output_filename(
     Args:
         photo: PhotoPair to generate name for
         batch: Parent batch
-        side: "front" or "back"
+        side: "front" or "back" (only used for back exports, front is default)
 
     Returns:
         Generated filename (without path)
@@ -73,12 +73,24 @@ def generate_output_filename(
     template = config.output.filename_template
     batch_name = sanitize_filename(batch.name)
 
-    filename = template.format(
-        date=photo_date.strftime("%Y-%m-%d"),
-        batch_name=batch_name,
-        sequence=photo.sequence_num,
-        side=side,
-    )
+    # Try format with side, fall back without
+    try:
+        filename = template.format(
+            date=photo_date.strftime("%Y-%m-%d"),
+            batch_name=batch_name,
+            sequence=photo.sequence_num,
+            side=side,
+        )
+    except KeyError:
+        # Template doesn't include {side}
+        filename = template.format(
+            date=photo_date.strftime("%Y-%m-%d"),
+            batch_name=batch_name,
+            sequence=photo.sequence_num,
+        )
+        # Add side suffix for backs
+        if side == "back":
+            filename = f"{filename}_back"
 
     # Add extension from original file
     if side == "front":
@@ -163,6 +175,7 @@ def finalize_photo(
     batch: Batch,
     db: Database,
     archive_originals: bool = True,
+    export_backs: bool = False,
 ) -> PhotoPair:
     """
     Finalize a single photo: copy, rename, write metadata.
@@ -172,13 +185,14 @@ def finalize_photo(
         batch: Parent batch
         db: Database instance
         archive_originals: Whether to copy originals to archive
+        export_backs: Whether to include back images in output (default: False)
 
     Returns:
         Updated PhotoPair with output paths
     """
     config = get_config()
 
-    # Archive originals first
+    # Archive originals first (backs are preserved in archive even if not exported)
     if archive_originals and config.output.preserve_originals:
         copy_to_archive(photo, batch)
 
@@ -187,7 +201,8 @@ def finalize_photo(
     output_folder = generate_output_folder(batch, photo_date)
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    # Generate output filenames
+    # Generate unique output filename for front
+    # Format: PP_{date}_{batch}_{seq:04d}.jpg (PP prefix ensures uniqueness)
     front_filename = generate_output_filename(photo, batch, "front")
     front_output = output_folder / front_filename
 
@@ -198,13 +213,12 @@ def finalize_photo(
     write_metadata(photo, batch, front_output)
     photo.output_front_path = front_output
 
-    # Handle back image
-    if photo.back_path and photo.back_path.exists():
+    # Handle back image (only if export_backs is True)
+    if export_backs and photo.back_path and photo.back_path.exists():
         back_filename = generate_output_filename(photo, batch, "back")
         back_output = output_folder / back_filename
 
         shutil.copy2(photo.back_path, back_output)
-        # Don't write full metadata to back, just basic info
         photo.output_back_path = back_output
 
     # Update status

@@ -44,10 +44,12 @@ metadata:
 output:
   # Naming and organization
   folder_structure: "{year}/{year}-{month}_{batch_name}"
-  filename_template: "{date}_{batch_name}_{sequence:04d}_{side}"
+  # PP_ prefix ensures unique filenames that won't conflict with iPhone/camera photos
+  filename_template: "PP_{date}_{batch_name}_{sequence:04d}"
   preserve_originals: true
   generate_web_copies: false
   web_copy_max_dimension: 2048
+  export_backs: false  # Only export front images (backs used for metadata only)
 
 ui:
   theme: light

@@ -453,10 +453,10 @@ def main():
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("← Back to Scan Ingest"):
-            st.switch_page("pages/2_scan_ingest.py")
+        if st.button("← Back to Scan"):
+            st.switch_page("pages/2_scan.py")
     with col2:
-        if st.button("Continue to Finalize →"):
+        if st.button("Continue to Export →"):
             st.switch_page("pages/4_finalize.py")
 
 
