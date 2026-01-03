@@ -225,27 +225,35 @@ def run_ai_analysis(batch: Batch):
     photos = db.get_photos_by_batch(batch.id)
 
     if not photos:
-        st.warning("No photos to analyze")
-        return
+        st.error("❌ No photos to analyze")
+        return False
 
     if not is_ai_dating_available():
-        st.error("AI dating not available. Check your Anthropic API key in Setup.")
-        return
+        st.error("❌ AI dating not available. Check your Anthropic API key in Setup.")
+        return False
 
-    with st.spinner("🤖 Analyzing photos with AI..."):
+    status = st.empty()
+    status.info("🤖 Analyzing photos with AI... (this may take 30-60 seconds)")
+
+    try:
         estimate = estimate_batch_date_with_ai(batch, photos, db)
 
         if estimate and estimate.year:
             # Apply to photos without dates
             updated = apply_ai_date_to_batch(batch, estimate, photos, db)
 
-            st.success(f"✅ AI estimates: **{estimate.year}** ({estimate.confidence.value} confidence)")
+            status.success(f"✅ AI estimates: **{estimate.year}** ({estimate.confidence.value} confidence)")
             st.write("**Evidence:**")
             for ev in estimate.evidence[:3]:
                 st.write(f"- {ev}")
             st.caption(f"Applied to {updated} photos")
+            return True
         else:
-            st.warning("AI couldn't determine dates from these photos")
+            status.warning("⚠️ AI analyzed photos but couldn't determine dates. Photos may lack datable visual elements (clothing styles, cars, technology, etc.)")
+            return False
+    except Exception as e:
+        status.error(f"❌ AI analysis failed: {e}")
+        return False
 
 
 def show_photos(batch: Batch):
@@ -262,8 +270,8 @@ def show_photos(batch: Batch):
     col1, col2 = st.columns([2, 1])
     with col2:
         if st.button("🤖 Analyze with AI", use_container_width=True):
-            run_ai_analysis(batch)
-            st.rerun()
+            if run_ai_analysis(batch):
+                st.rerun()  # Only rerun if successful to show updated dates
 
     # Grid
     cols = st.columns(6)
