@@ -371,6 +371,9 @@ class Scanner:
                 process.kill()
                 scan_error = "Scanning timed out"
 
+            # Ensure output folder exists
+            output_folder.mkdir(parents=True, exist_ok=True)
+
             # Process scanned files (even if there was an error, we may have partial results)
             scanned_files = sorted(temp_path.glob("scan_*.jpg"))
 
