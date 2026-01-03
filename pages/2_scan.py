@@ -1,265 +1,229 @@
 """
-Scan Page - Simplified scanning with auto-ingest.
+Scan Page - Simple scanning that just works.
 """
 
 import streamlit as st
+import subprocess
+import shutil
+import re
 from pathlib import Path
+from datetime import datetime
 
 from photopipe.config import get_config
 from photopipe.database import Database
-from photopipe.models import Batch, PhotoStatus
-from photopipe.pairing import pair_scans
-from photopipe.scanner import Scanner, check_sane_installed
+from photopipe.models import Batch, PhotoPair, PhotoStatus
 from photopipe.file_manager import generate_thumbnail
 
 
 st.set_page_config(page_title="Scan - PhotoPipe", page_icon="📷", layout="wide")
 
-# Known scanner
 SCANNER_DEVICE = "epsonds:net:192.168.1.62"
 
 
 def init_session_state():
-    """Initialize session state."""
     if "db" not in st.session_state:
         config = get_config()
         config.ensure_directories()
         st.session_state.db = Database()
-
-    if "last_scanned_sequence" not in st.session_state:
-        st.session_state.last_scanned_sequence = None
-    if "scan_error" not in st.session_state:
-        st.session_state.scan_error = None
-    if "scanned_this_session" not in st.session_state:
-        st.session_state.scanned_this_session = 0
-    if "scanning" not in st.session_state:
-        st.session_state.scanning = False
+    if "next_seq" not in st.session_state:
+        st.session_state.next_seq = 1
+    if "photos_scanned" not in st.session_state:
+        st.session_state.photos_scanned = 0
 
 
-def get_current_batch():
-    """Get or select current batch."""
+def get_batch():
     db = st.session_state.db
     batches = db.get_all_batches()
-
     if not batches:
-        st.warning("No batches found. Create a batch first.")
+        st.warning("Create a batch first.")
         if st.button("Go to Batch Setup"):
             st.switch_page("pages/1_batch_setup.py")
         return None
 
-    # Simple batch selector
-    batch_names = [b.name for b in batches]
-    selected = st.selectbox("Batch", batch_names, label_visibility="collapsed")
-
-    for b in batches:
-        if b.name == selected:
-            return b
-    return None
+    names = [b.name for b in batches]
+    selected = st.selectbox("Batch", names, label_visibility="collapsed")
+    return next((b for b in batches if b.name == selected), None)
 
 
-def scan_and_ingest(batch: Batch):
-    """Scan photos and automatically ingest them."""
+def scan_photos(batch: Batch, resolution: int, duplex: bool):
+    """Scan photos and directly add them to the database."""
     db = st.session_state.db
     config = get_config()
-    input_folder = batch.input_folder or config.paths.input_folder
 
-    # Ensure folder exists
+    # Ensure input folder exists
+    input_folder = Path.home() / "Pictures" / "Scanner_Input"
     input_folder.mkdir(parents=True, exist_ok=True)
 
-    # Get next sequence number
-    if st.session_state.last_scanned_sequence:
-        next_seq = st.session_state.last_scanned_sequence + 1
+    # Get next sequence number from database
+    existing = db.get_photos_by_batch(batch.id)
+    if existing:
+        next_seq = max(p.sequence_num for p in existing) + 1
     else:
-        next_seq = db.get_next_sequence_num(batch.id)
+        next_seq = 1
 
-    # Settings in a compact row
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        resolution = st.selectbox("DPI", [300, 600, 1200], index=1)
-    with col2:
-        duplex = st.checkbox("Scan backs", value=True)
-    with col3:
-        st.metric("Next #", next_seq)
+    # Build scanimage command
+    source = "ADF Duplex" if duplex else "ADF Front"
+    batch_prefix = f"scan_{datetime.now().strftime('%H%M%S')}"
+    batch_pattern = str(input_folder / f"{batch_prefix}_%04d.jpg")
 
-    # Main scan button
-    col1, col2 = st.columns(2)
+    cmd = [
+        "scanimage",
+        "-d", SCANNER_DEVICE,
+        "--resolution", str(resolution),
+        "--mode", "color",
+        "--format", "jpeg",
+        "--source", source,
+        f"--batch={batch_pattern}",
+    ]
 
-    with col1:
-        scan_clicked = st.button(
-            "📷 Scan Photos" if not st.session_state.last_scanned_sequence else "📷 Scan More Photos",
-            type="primary",
-            disabled=st.session_state.scanning,
-            use_container_width=True
+    # Run scanner
+    status = st.empty()
+    status.info("🔄 Scanning... Place photos in the scanner.")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
 
-    with col2:
-        if st.session_state.last_scanned_sequence:
-            if st.button("✅ Done Scanning", use_container_width=True):
-                st.session_state.last_scanned_sequence = None
-                st.session_state.scanned_this_session = 0
-                st.session_state.scan_error = None
-                st.switch_page("pages/3_review.py")
+        stderr = result.stderr.lower()
 
-    # Show session status
-    if st.session_state.scanned_this_session > 0:
-        st.success(f"✓ {st.session_state.scanned_this_session} photos scanned this session")
+        # Find scanned files
+        scanned = sorted(input_folder.glob(f"{batch_prefix}_*.jpg"))
 
-    if st.session_state.scan_error:
-        st.warning(f"Last scan: {st.session_state.scan_error}")
-        st.info("Clear the jam and click 'Scan More Photos' to continue.")
+        if not scanned:
+            status.warning("No photos scanned. Make sure photos are in the scanner.")
+            return 0
 
-    # Execute scan
-    if scan_clicked:
-        st.session_state.scanning = True
-        st.session_state.scan_error = None
+        # Process files: pair fronts and backs, add to database
+        photos_added = 0
 
-        progress = st.progress(0)
-        status = st.empty()
-        scanned_count = 0
+        if duplex:
+            # In duplex mode, files alternate: front, back, front, back
+            for i in range(0, len(scanned), 2):
+                front_temp = scanned[i]
+                back_temp = scanned[i + 1] if i + 1 < len(scanned) else None
 
-        def update_progress(count, total):
-            nonlocal scanned_count
-            scanned_count = count
-            status.text(f"Scanning photo #{next_seq + count - 1}...")
-            st.session_state.last_scanned_sequence = next_seq + count - 1
+                # Rename to permanent names
+                seq = next_seq + photos_added
+                front_path = input_folder / f"photo_{seq:04d}.jpg"
+                back_path = input_folder / f"photo_{seq:04d}_b.jpg" if back_temp else None
 
-        try:
-            scanner = Scanner(device_name=SCANNER_DEVICE)
+                shutil.move(front_temp, front_path)
+                if back_temp and back_path:
+                    shutil.move(back_temp, back_path)
 
-            results = scanner.scan_batch(
-                output_folder=input_folder,
-                name_prefix=batch.name.replace(" ", "_"),
-                start_sequence=next_seq,
-                resolution=resolution,
-                duplex=duplex,
-                mode="color",
-                progress_callback=update_progress,
-            )
+                # Add to database
+                photo = PhotoPair(
+                    batch_id=batch.id,
+                    sequence_num=seq,
+                    front_path=front_path,
+                    back_path=back_path,
+                    status=PhotoStatus.INGESTED,
+                )
+                db.create_photo(photo)
+                photos_added += 1
+        else:
+            # Single-sided
+            for front_temp in scanned:
+                seq = next_seq + photos_added
+                front_path = input_folder / f"photo_{seq:04d}.jpg"
+                shutil.move(front_temp, front_path)
 
-            if results:
-                st.session_state.last_scanned_sequence = results[-1].sequence_num
-                st.session_state.scanned_this_session += len(results)
+                photo = PhotoPair(
+                    batch_id=batch.id,
+                    sequence_num=seq,
+                    front_path=front_path,
+                    back_path=None,
+                    status=PhotoStatus.INGESTED,
+                )
+                db.create_photo(photo)
+                photos_added += 1
 
-                # Auto-ingest
-                status.text("Importing photos...")
-                new_photos = pair_scans(input_folder, batch, db)
+        # Check for jam
+        if "jam" in stderr:
+            status.warning(f"⚠️ Paper jam after {photos_added} photos. Clear jam and scan again to continue.")
+        else:
+            status.success(f"✅ Scanned {photos_added} photos")
 
-                progress.progress(100)
-                status.empty()
-                st.success(f"✓ Scanned and imported {len(results)} photos")
-                st.rerun()
-            else:
-                status.empty()
-                st.info("No photos scanned. Load photos in the scanner and try again.")
+        st.session_state.photos_scanned += photos_added
+        return photos_added
 
-        except Exception as e:
-            error_msg = str(e)
-            st.session_state.scan_error = error_msg
-
-            # Try to save any photos that were scanned
-            if scanned_count > 0:
-                st.session_state.last_scanned_sequence = next_seq + scanned_count - 1
-                st.session_state.scanned_this_session += scanned_count
-
-                try:
-                    new_photos = pair_scans(input_folder, batch, db)
-                    if new_photos:
-                        st.success(f"✓ Saved {len(new_photos)} photos before the interruption")
-                except Exception:
-                    pass
-
-            st.rerun()
-
-        finally:
-            st.session_state.scanning = False
+    except subprocess.TimeoutExpired:
+        status.error("Scanning timed out")
+        return 0
+    except Exception as e:
+        status.error(f"Scan error: {e}")
+        return 0
 
 
-def show_batch_photos(batch: Batch):
-    """Show photos in the batch."""
+def show_photos(batch: Batch):
     db = st.session_state.db
     photos = db.get_photos_by_batch(batch.id)
 
     if not photos:
-        st.info("No photos in batch yet. Scan some photos above.")
+        st.info("No photos in batch. Scan some photos above.")
         return
 
-    st.subheader(f"📸 {len(photos)} Photos in Batch")
+    st.subheader(f"📸 {len(photos)} Photos")
 
-    # Summary
-    with_dates = len([p for p in photos if p.extracted_date])
-    needs_review = len([p for p in photos if p.needs_review])
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total", len(photos))
-    with col2:
-        st.metric("Have Dates", with_dates)
-    with col3:
-        if needs_review > 0:
-            st.metric("Need Review", needs_review, delta=f"-{needs_review}", delta_color="inverse")
-        else:
-            st.metric("Need Review", 0)
-
-    # Photo grid
+    # Grid
     cols = st.columns(6)
-    for i, photo in enumerate(photos[:24]):  # Show first 24
+    for i, photo in enumerate(photos[:18]):
         with cols[i % 6]:
             try:
-                if photo.front_path and Path(photo.front_path).exists():
-                    thumb = generate_thumbnail(Path(photo.front_path), size=150)
+                if photo.front_path and photo.front_path.exists():
+                    thumb = generate_thumbnail(photo.front_path, size=120)
                     st.image(thumb, use_container_width=True)
-
-                    # Status indicator
-                    if photo.needs_review:
-                        st.caption(f"#{photo.sequence_num} ⚠️")
-                    elif photo.extracted_date:
-                        st.caption(f"#{photo.sequence_num} ✓")
-                    else:
-                        st.caption(f"#{photo.sequence_num}")
-            except Exception:
+                st.caption(f"#{photo.sequence_num}")
+            except:
                 st.caption(f"#{photo.sequence_num}")
 
-    if len(photos) > 24:
-        st.caption(f"... and {len(photos) - 24} more")
+    if len(photos) > 18:
+        st.caption(f"+ {len(photos) - 18} more")
 
-    # Action buttons
-    st.markdown("---")
+    # Actions
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🔍 Review & Edit Metadata", type="primary", use_container_width=True):
+        if st.button("🔍 Review Metadata", type="primary", use_container_width=True):
             st.switch_page("pages/3_review.py")
     with col2:
-        if st.button("📤 Export Photos", use_container_width=True):
+        if st.button("📤 Export", use_container_width=True):
             st.switch_page("pages/4_finalize.py")
 
 
 def main():
     init_session_state()
+    st.title("📷 Scan")
 
-    st.title("📷 Scan Photos")
-
-    # Check scanner
-    if not check_sane_installed():
-        st.error("Scanner software (SANE) not installed. Run: `brew install sane-backends`")
-        return
-
-    # Batch selector
-    batch = get_current_batch()
+    batch = get_batch()
     if not batch:
         return
 
-    # Show batch info
-    st.caption(f"📍 {batch.location_description or 'No location'} | 📅 {batch.get_date_range_str() or 'No date'}")
-
+    st.caption(f"📅 {batch.get_date_range_str() or 'No date'} | 📍 {batch.location_description or 'No location'}")
     st.markdown("---")
 
-    # Scanning section
-    scan_and_ingest(batch)
+    # Scan controls
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        resolution = st.selectbox("DPI", [300, 600, 1200], index=1)
+    with col2:
+        duplex = st.checkbox("Scan backs", value=True)
+    with col3:
+        if st.button("📷 Scan Photos", type="primary", use_container_width=True):
+            scan_photos(batch, resolution, duplex)
+            st.rerun()
+
+    if st.session_state.photos_scanned > 0:
+        st.success(f"✓ {st.session_state.photos_scanned} photos scanned this session")
+        if st.button("Clear count"):
+            st.session_state.photos_scanned = 0
+            st.rerun()
 
     st.markdown("---")
-
-    # Photos in batch
-    show_batch_photos(batch)
+    show_photos(batch)
 
 
 if __name__ == "__main__":
