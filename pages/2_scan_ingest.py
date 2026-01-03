@@ -345,27 +345,40 @@ def scanner_control(batch: Batch):
         """)
         return
 
-    # List available scanners
-    with st.spinner("Detecting scanners..."):
-        devices = list_scanners()
+    config = get_config()
 
-    if not devices:
+    # Try to list available scanners, but don't block if detection fails
+    devices = []
+    with st.spinner("Detecting scanners..."):
+        try:
+            devices = list_scanners()
+        except Exception:
+            pass
+
+    # Build device options - include detected devices plus manual entry option
+    device_options = {}
+    if devices:
+        device_options = {str(d): d.name for d in devices}
+
+    # Always add the known network scanner as an option (detection is unreliable for network scanners)
+    KNOWN_NETWORK_SCANNER = "epsonds:net:192.168.1.62"
+    device_options["Epson FF-680W (WiFi)"] = KNOWN_NETWORK_SCANNER
+
+    # Also check if there's a configured device in settings
+    if config.scanner.device and config.scanner.device not in device_options.values():
+        device_options[f"Configured: {config.scanner.device}"] = config.scanner.device
+
+    if not device_options:
         st.warning("""
-        **No scanners detected**
+        **No scanners available**
 
         Make sure your Epson FastFoto FF-680W is:
         1. Connected via USB or WiFi
         2. Powered on
-        3. Has the latest drivers installed
-
-        You can also manually import scans from the FastFoto software output folder.
         """)
         return
 
     # Scanner selection
-    config = get_config()
-    device_options = {str(d): d.name for d in devices}
-
     selected_device = st.selectbox(
         "Select Scanner",
         options=list(device_options.keys()),
@@ -373,6 +386,10 @@ def scanner_control(batch: Batch):
     )
 
     device_name = device_options[selected_device]
+
+    # Show connection status
+    if "net:" in device_name:
+        st.caption(f"📡 Network scanner: `{device_name}`")
 
     # Scan settings
     st.write("**Scan Settings**")
