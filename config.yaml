@@ -1,0 +1,54 @@
+# PhotoPipe Configuration
+
+paths:
+  input_folder: ~/Pictures/Scanner_Input
+  output_folder: ~/Pictures/Scanned_Photos
+  archive_folder: ~/Pictures/Scanned_Photos/_archive
+  database: ~/.photopipe/photopipe.db
+
+scanner:
+  # FastFoto naming pattern (uses _b suffix for back images)
+  front_pattern: "{name}_{num}.jpg"
+  back_pattern: "{name}_{num}_b.jpg"
+  default_name_prefix: "photo"
+  watch_interval_seconds: 2
+
+  # Scanner hardware settings
+  device: null  # SANE device name, auto-detect if null
+  resolution: 600  # DPI
+  mode: color  # color, gray, lineart
+  duplex: true  # Scan front and back
+  source: ADF  # ADF (auto document feeder) or Flatbed
+
+ocr:
+  # Tesseract settings
+  language: eng
+  confidence_threshold: 70  # Flag for review below this
+  preprocessing:
+    grayscale: true
+    adaptive_threshold: true
+    deskew: true
+
+ai_dating:
+  enabled: true
+  api_key_env_var: ANTHROPIC_API_KEY  # Read from environment
+  model: claude-sonnet-4-20250514
+  max_samples_per_batch: 3
+  max_image_dimension: 1024  # Resize to save tokens
+
+metadata:
+  # Default values when not specified
+  default_timezone: America/New_York
+  copyright_template: "\u00a9 {year} Family Archive"
+
+output:
+  # Naming and organization
+  folder_structure: "{year}/{year}-{month}_{batch_name}"
+  filename_template: "{date}_{batch_name}_{sequence:04d}_{side}"
+  preserve_originals: true
+  generate_web_copies: false
+  web_copy_max_dimension: 2048
+
+ui:
+  theme: light
+  thumbnails_per_page: 20

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  photopipe:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # Persistent data storage
+      - photopipe-config:/data/config
+      - photopipe-db:/data/db
+      # Mount local folders for scanner input/output
+      - ~/Pictures/Scanner_Input:/data/input
+      - ~/Pictures/Scanned_Photos:/data/output
+      - ~/Pictures/Scanned_Photos/_archive:/data/archive
+    environment:
+      - PHOTOPIPE_DATA_DIR=/data
+    restart: unless-stopped
+
+volumes:
+  photopipe-config:
+  photopipe-db:
