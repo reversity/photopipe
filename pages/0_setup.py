@@ -102,21 +102,28 @@ def setup_wizard():
 
             save_settings(settings)
 
-            st.success("Settings saved!")
-            st.balloons()
+            st.session_state.settings_saved = True
+            st.session_state.is_first_run = is_first_run
+            st.rerun()
 
-            # Show tutorial prompt for first-time users
-            if is_first_run:
-                st.info("🎉 Setup complete! Would you like to see the tutorial?")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("📖 View Tutorial", type="primary"):
-                        st.switch_page("pages/help.py")
-                with col2:
-                    if st.button("➡️ Start Using PhotoPipe"):
-                        st.switch_page("pages/1_batch_setup.py")
-            else:
-                st.switch_page("pages/1_batch_setup.py")
+    # Show post-save UI outside the form
+    if st.session_state.get("settings_saved"):
+        st.success("Settings saved!")
+
+        if st.session_state.get("is_first_run"):
+            st.info("🎉 Setup complete! Would you like to see the tutorial?")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📖 View Tutorial", type="primary"):
+                    st.session_state.settings_saved = False
+                    st.switch_page("pages/help.py")
+            with col2:
+                if st.button("➡️ Start Using PhotoPipe"):
+                    st.session_state.settings_saved = False
+                    st.switch_page("pages/1_batch_setup.py")
+        else:
+            st.session_state.settings_saved = False
+            st.switch_page("pages/1_batch_setup.py")
 
 
 def main():
