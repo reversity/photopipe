@@ -347,36 +347,15 @@ def scanner_control(batch: Batch):
 
     config = get_config()
 
-    # Try to list available scanners, but don't block if detection fails
-    devices = []
-    with st.spinner("Detecting scanners..."):
-        try:
-            devices = list_scanners()
-        except Exception:
-            pass
-
-    # Build device options - include detected devices plus manual entry option
-    device_options = {}
-    if devices:
-        device_options = {str(d): d.name for d in devices}
-
-    # Always add the known network scanner as an option (detection is unreliable for network scanners)
+    # Known network scanner - always available as an option
     KNOWN_NETWORK_SCANNER = "epsonds:net:192.168.1.62"
-    device_options["Epson FF-680W (WiFi)"] = KNOWN_NETWORK_SCANNER
 
-    # Also check if there's a configured device in settings
-    if config.scanner.device and config.scanner.device not in device_options.values():
+    # Build device options without slow detection
+    device_options = {"Epson FF-680W (WiFi)": KNOWN_NETWORK_SCANNER}
+
+    # Add configured device if different
+    if config.scanner.device and config.scanner.device != KNOWN_NETWORK_SCANNER:
         device_options[f"Configured: {config.scanner.device}"] = config.scanner.device
-
-    if not device_options:
-        st.warning("""
-        **No scanners available**
-
-        Make sure your Epson FastFoto FF-680W is:
-        1. Connected via USB or WiFi
-        2. Powered on
-        """)
-        return
 
     # Scanner selection
     selected_device = st.selectbox(
@@ -386,10 +365,7 @@ def scanner_control(batch: Batch):
     )
 
     device_name = device_options[selected_device]
-
-    # Show connection status
-    if "net:" in device_name:
-        st.caption(f"📡 Network scanner: `{device_name}`")
+    st.caption(f"📡 `{device_name}`")
 
     # Scan settings
     st.write("**Scan Settings**")
