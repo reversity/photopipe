@@ -73,6 +73,8 @@ def scan_photos(batch: Batch, resolution: int, duplex: bool):
         "--mode", "color",
         "--format", "jpeg",
         "--source", source,
+        "--adf-crp=yes",  # Auto-crop to photo edges
+        "--adf-skew=yes",  # Correct skew
         f"--batch={batch_pattern}",
     ]
 
