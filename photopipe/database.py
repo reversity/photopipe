@@ -18,7 +18,10 @@ from photopipe.models import (
     Batch,
     BatchStatus,
     BatchTemplate,
+    Bucket,
+    BucketStatus,
     PhotoPair,
+    PhotoPhase,
     PhotoStatus,
     ProcessingLogEntry,
     Location,
@@ -311,8 +314,10 @@ class Database:
                     ai_analysis, final_date, final_location_lat, final_location_lon,
                     final_location_description, final_description, final_keywords,
                     status, needs_review, review_notes,
-                    output_front_path, output_back_path, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    output_front_path, output_back_path, created_at, updated_at,
+                    bucket_id, phase,
+                    handwriting_ocr_text, handwriting_ocr_provider, handwriting_ocr_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     photo.id,
@@ -340,6 +345,11 @@ class Database:
                     str(photo.output_back_path) if photo.output_back_path else None,
                     photo.created_at.isoformat(),
                     photo.updated_at.isoformat(),
+                    photo.bucket_id,
+                    photo.phase,
+                    photo.handwriting_ocr_text,
+                    photo.handwriting_ocr_provider,
+                    photo.handwriting_ocr_confidence,
                 ),
             )
         return photo
@@ -410,16 +420,21 @@ class Database:
             conn.execute(
                 """
                 UPDATE photos SET
+                    batch_id = ?,
                     ocr_text_back = ?, ocr_confidence = ?, ocr_raw_results = ?,
                     extracted_date = ?, date_source = ?, date_confidence = ?,
                     ai_analysis = ?, final_date = ?, final_location_lat = ?,
                     final_location_lon = ?, final_location_description = ?,
                     final_description = ?, final_keywords = ?,
                     status = ?, needs_review = ?, review_notes = ?,
-                    output_front_path = ?, output_back_path = ?, updated_at = ?
+                    output_front_path = ?, output_back_path = ?, updated_at = ?,
+                    bucket_id = ?, phase = ?,
+                    handwriting_ocr_text = ?, handwriting_ocr_provider = ?,
+                    handwriting_ocr_confidence = ?
                 WHERE id = ?
                 """,
                 (
+                    photo.batch_id,
                     photo.ocr_text_back,
                     photo.ocr_raw_results.get("confidence") if photo.ocr_raw_results else None,
                     json.dumps(photo.ocr_raw_results) if photo.ocr_raw_results else None,
@@ -439,6 +454,11 @@ class Database:
                     str(photo.output_front_path) if photo.output_front_path else None,
                     str(photo.output_back_path) if photo.output_back_path else None,
                     photo.updated_at.isoformat(),
+                    photo.bucket_id,
+                    photo.phase,
+                    photo.handwriting_ocr_text,
+                    photo.handwriting_ocr_provider,
+                    photo.handwriting_ocr_confidence,
                     photo.id,
                 ),
             )
@@ -502,9 +522,23 @@ class Database:
                 longitude=row["final_location_lon"],
             )
 
+        # Columns added in migration 001 — read defensively so older test DBs
+        # (and any tooling that still drops in the legacy SCHEMA only) keep working.
+        cols = set(row.keys())
+        bucket_id = row["bucket_id"] if "bucket_id" in cols else None
+        phase_raw = row["phase"] if "phase" in cols else None
+        phase = PhotoPhase(phase_raw) if phase_raw else PhotoPhase.FINALIZED
+        handwriting_text = row["handwriting_ocr_text"] if "handwriting_ocr_text" in cols else None
+        handwriting_provider = (
+            row["handwriting_ocr_provider"] if "handwriting_ocr_provider" in cols else None
+        )
+        handwriting_conf = (
+            row["handwriting_ocr_confidence"] if "handwriting_ocr_confidence" in cols else None
+        )
+
         return PhotoPair(
             id=row["id"],
-            batch_id=row["batch_id"],
+            batch_id=row["batch_id"] or "",
             sequence_num=row["sequence_num"],
             front_path=Path(row["front_path"]),
             back_path=Path(row["back_path"]) if row["back_path"] else None,
@@ -519,12 +553,106 @@ class Database:
             final_description=row["final_description"],
             final_keywords=json.loads(row["final_keywords"]) if row["final_keywords"] else [],
             status=PhotoStatus(row["status"]),
+            phase=phase,
+            bucket_id=bucket_id,
             needs_review=bool(row["needs_review"]),
             review_notes=row["review_notes"],
+            handwriting_ocr_text=handwriting_text,
+            handwriting_ocr_provider=handwriting_provider,
+            handwriting_ocr_confidence=handwriting_conf,
             output_front_path=Path(row["output_front_path"]) if row["output_front_path"] else None,
             output_back_path=Path(row["output_back_path"]) if row["output_back_path"] else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    # ==================== Bucket Operations ====================
+
+    def create_bucket(self, bucket: Bucket) -> Bucket:
+        """Create a new bucket record."""
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO buckets (
+                    id, label, helper_name, status, batch_id, created_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    bucket.id,
+                    bucket.label,
+                    bucket.helper_name,
+                    bucket.status,
+                    bucket.batch_id,
+                    bucket.created_at.isoformat(),
+                    bucket.closed_at.isoformat() if bucket.closed_at else None,
+                ),
+            )
+        return bucket
+
+    def get_bucket(self, bucket_id: str) -> Optional[Bucket]:
+        """Get a bucket by ID."""
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM buckets WHERE id = ?", (bucket_id,)
+            ).fetchone()
+        return self._row_to_bucket(row) if row else None
+
+    def list_buckets(self, status: Optional[BucketStatus] = None) -> list[Bucket]:
+        """List buckets, optionally filtered by status."""
+        with self.connection() as conn:
+            if status is not None:
+                status_val = status.value if hasattr(status, "value") else status
+                rows = conn.execute(
+                    "SELECT * FROM buckets WHERE status = ? ORDER BY created_at DESC",
+                    (status_val,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM buckets ORDER BY created_at DESC"
+                ).fetchall()
+        return [self._row_to_bucket(r) for r in rows]
+
+    def update_bucket(self, bucket: Bucket) -> Bucket:
+        """Update an existing bucket record."""
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE buckets SET
+                    label = ?, helper_name = ?, status = ?, batch_id = ?, closed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    bucket.label,
+                    bucket.helper_name,
+                    bucket.status,
+                    bucket.batch_id,
+                    bucket.closed_at.isoformat() if bucket.closed_at else None,
+                    bucket.id,
+                ),
+            )
+        return bucket
+
+    def get_photos_by_bucket(self, bucket_id: str) -> list[PhotoPair]:
+        """Get all photos attached to a bucket, ordered by sequence_num."""
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM photos WHERE bucket_id = ? ORDER BY sequence_num",
+                (bucket_id,),
+            ).fetchall()
+        return [self._row_to_photo(r) for r in rows]
+
+    def _row_to_bucket(self, row: sqlite3.Row) -> Bucket:
+        """Convert database row to Bucket object."""
+        return Bucket(
+            id=row["id"],
+            label=row["label"],
+            helper_name=row["helper_name"],
+            status=BucketStatus(row["status"]) if row["status"] else BucketStatus.OPEN,
+            batch_id=row["batch_id"],
+            created_at=datetime.fromisoformat(row["created_at"])
+            if row["created_at"]
+            else datetime.now(),
+            closed_at=datetime.fromisoformat(row["closed_at"]) if row["closed_at"] else None,
         )
 
     # ==================== Template Operations ====================
