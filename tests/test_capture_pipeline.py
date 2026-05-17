@@ -13,10 +13,6 @@ from photopipe.database import Database
 
 @pytest.fixture
 def db(tmp_path):
-    from photopipe.config import get_config
-
-    cfg = get_config()
-    cfg.paths.database = tmp_path / "test.db"
     return Database(db_path=tmp_path / "test.db")
 
 

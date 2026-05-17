@@ -601,6 +601,9 @@ class Database:
         """List buckets, optionally filtered by status."""
         with self.connection() as conn:
             if status is not None:
+                # BucketStatus is a str-Enum mixin; passing it directly works,
+                # but we coerce to a bare str to keep the SQL parameter type stable
+                # regardless of caller (enum or raw string).
                 status_val = status.value if hasattr(status, "value") else status
                 rows = conn.execute(
                     "SELECT * FROM buckets WHERE status = ? ORDER BY created_at DESC",

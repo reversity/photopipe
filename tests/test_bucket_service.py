@@ -11,24 +11,14 @@ from photopipe.models import BucketStatus, PhotoPair, PhotoPhase
 
 @pytest.fixture
 def db(tmp_path):
-    """Fresh Database instance with a per-test SQLite file.
-
-    We point the cached config's database path at tmp_path before constructing
-    Database. Database.__init__ reads get_config().paths.database when no
-    explicit path is passed.
-    """
-    from photopipe.config import get_config
-
-    cfg = get_config()
-    cfg.paths.database = tmp_path / "test.db"
+    """Fresh Database instance with a per-test SQLite file."""
     return Database(db_path=tmp_path / "test.db")
 
 
 def test_open_bucket_creates_record(db):
     svc = BucketService(db)
     bucket = svc.open_bucket(label="Grandma's blue album", helper_name="Jo")
-    # use_enum_values=True on Bucket means bucket.status is the string value
-    assert bucket.status == BucketStatus.OPEN.value
+    assert bucket.status == BucketStatus.OPEN
     reloaded = db.get_bucket(bucket.id)
     assert reloaded is not None
     assert reloaded.label == "Grandma's blue album"
@@ -40,7 +30,7 @@ def test_close_bucket_sets_closed_status(db):
     bucket = svc.open_bucket(label="X")
     svc.close_bucket(bucket.id)
     reloaded = db.get_bucket(bucket.id)
-    assert reloaded.status == BucketStatus.CLOSED.value
+    assert reloaded.status == BucketStatus.CLOSED
     assert reloaded.closed_at is not None
 
 
@@ -81,7 +71,7 @@ def test_convert_to_batch_moves_photos_and_marks_bucket(db):
     )
     reloaded_bucket = db.get_bucket(bucket.id)
     reloaded_photo = db.get_photo(photo.id)
-    assert reloaded_bucket.status == BucketStatus.CONVERTED.value
+    assert reloaded_bucket.status == BucketStatus.CONVERTED
     assert reloaded_bucket.batch_id == batch.id
     assert reloaded_photo.batch_id == batch.id
     assert reloaded_photo.phase == PhotoPhase.CURATED.value
@@ -101,3 +91,26 @@ def test_list_buckets_filters_by_status(db):
     assert open_bucket.id in open_ids
     assert closed_bucket.id in closed_ids
     assert closed_bucket.id not in open_ids
+
+
+def test_convert_to_batch_propagates_all_fields(db):
+    """Date range, location, people, and event description must all land on the batch."""
+    from datetime import date
+
+    svc = BucketService(db)
+    bucket = svc.open_bucket(label="Trip")
+    batch = svc.convert_to_batch(
+        bucket.id,
+        name="Summer 1985",
+        date_start=date(1985, 6, 1),
+        date_end=date(1985, 8, 31),
+        location_description="Toledo, OH",
+        people=["Mom", "Dad"],
+        event_description="Summer vacation",
+    )
+    assert batch.name == "Summer 1985"
+    assert batch.date_start == date(1985, 6, 1)
+    assert batch.date_end == date(1985, 8, 31)
+    assert batch.location_description == "Toledo, OH"
+    assert batch.people == ["Mom", "Dad"]
+    assert batch.event_description == "Summer vacation"

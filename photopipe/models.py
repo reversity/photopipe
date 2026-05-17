@@ -389,6 +389,9 @@ class Bucket(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     closed_at: Optional[datetime] = None
 
+    class Config:
+        use_enum_values = True
+
 
 class AIJob(BaseModel):
     """A queued or running AI analysis job for a batch."""
@@ -401,3 +404,6 @@ class AIJob(BaseModel):
     completed_at: Optional[datetime] = None
     photo_ids: list[str] = Field(default_factory=list)
     result_summary: Optional[dict] = None
+
+    class Config:
+        use_enum_values = True
