@@ -1,6 +1,7 @@
 """Migration 001: add buckets, ai_jobs, photo phase + handwriting OCR columns."""
 
 import sqlite3
+import warnings
 
 MIGRATION_ID = "001_phase_and_buckets"
 
@@ -57,6 +58,11 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 def _add_column(conn: sqlite3.Connection, table: str, col: str, decl: str) -> None:
     """Add ``col`` to ``table`` if the table exists and column is missing."""
     if not _table_exists(conn, table):
+        warnings.warn(
+            f"_add_column: skipped {table}.{col} because table {table!r} does not exist",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if col not in cols:
