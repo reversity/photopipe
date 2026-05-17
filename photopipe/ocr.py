@@ -5,8 +5,7 @@ Uses Tesseract for text extraction from photo backs,
 with preprocessing and date pattern recognition.
 """
 
-import re
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +21,7 @@ from photopipe.models import (
     DateConfidence,
 )
 from photopipe.database import Database
+# Compat shim: re-export pure date-parsing API. Removed in Task 11 when ocr.py is deleted.
 from photopipe.date_parser import parse_date_from_text, expand_year, DATE_PATTERNS, MONTH_MAP, SEASON_MAP  # noqa: F401
 
 

@@ -40,6 +40,9 @@ def test_no_date_returns_empty():
 
 
 def test_rejects_implausible_year():
-    # Year-only "1850" must NOT parse (out of 1900-now range)
-    results = parse_date_from_text("1850")
-    assert all(r[0].year >= 1900 for r in results)
+    # The year-only regex doesn't match years before 1900 at all
+    assert parse_date_from_text("1850") == []
+    # And anything it does match must be in range
+    results = parse_date_from_text("Mom holding the cat 1985")
+    assert results
+    assert all(1900 <= r[0].year <= 2100 for r in results)
