@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from photopipe.config import get_config
 from photopipe.date_parser import parse_date_from_text
-from photopipe.vlm_client import VLMClient, build_image_block
+from photopipe.vlm_client import VLMClient, build_image_block, resize_image_to_jpeg_bytes
 
 
 HANDWRITING_VLM_PROMPT = """Read any handwritten or stamped text on this photo back.
@@ -27,10 +27,10 @@ If there is no readable text, respond with an empty string."""
 
 
 @dataclass
-class OCRResult:
+class HandwritingResult:
     text: str
     confidence: float
-    provider: str  # "mistral" | "claude_vlm" | "none"
+    provider: str  # "mistral" | "claude" | "none"
     extracted_date: Optional[date] = None
 
 
@@ -55,6 +55,12 @@ class HandwritingOCR:
         cfg = get_config().handwriting_ocr
         self.cfg = cfg
         self.mistral_api_key = mistral_api_key or os.environ.get(cfg.mistral_api_key_env_var)
+        if self.cfg.provider == "mistral" and not self.mistral_api_key:
+            raise ValueError(
+                "handwriting_ocr.provider is 'mistral' but no Mistral API key is set "
+                f"(checked env var {cfg.mistral_api_key_env_var}). "
+                "Set the key or change provider to 'claude' or 'auto'."
+            )
         self.vlm_client = vlm_client if vlm_client is not None else VLMClient()
         self._mistral_client: Any = None
 
@@ -74,14 +80,14 @@ class HandwritingOCR:
             self._mistral_client = Mistral(api_key=self.mistral_api_key)
         return self._mistral_client
 
-    def ocr_back(self, image_path: Path) -> OCRResult:
+    def ocr_back(self, image_path: Path) -> HandwritingResult:
         """Run handwriting OCR on a single photo back.
 
-        Returns an :class:`OCRResult` whose ``provider`` indicates which
+        Returns a :class:`HandwritingResult` whose ``provider`` indicates which
         path produced the text. When the parsed text yields any recognizable
         date, ``extracted_date`` is populated with the first match.
         """
-        result: Optional[OCRResult] = None
+        result: Optional[HandwritingResult] = None
 
         # Try Mistral first when configured and a client is available.
         if self.cfg.provider in ("mistral", "auto") and self.mistral_client:
@@ -95,14 +101,14 @@ class HandwritingOCR:
             result = self._call_vlm(image_path)
 
         if result is None:
-            result = OCRResult(text="", confidence=0.0, provider="none")
+            result = HandwritingResult(text="", confidence=0.0, provider="none")
 
         dates = parse_date_from_text(result.text)
         if dates:
             result.extracted_date = dates[0][0]
         return result
 
-    def _call_mistral(self, image_path: Path) -> OCRResult:
+    def _call_mistral(self, image_path: Path) -> HandwritingResult:
         """Run Mistral OCR 3 on a single image.
 
         Assumed SDK shape (mistralai >= 1.0):
@@ -112,8 +118,10 @@ class HandwritingOCR:
         If the actual SDK surface differs, this method is the only place
         that needs to change — tests mock it directly.
         """
-        with open(image_path, "rb") as f:
-            img_b64 = base64.standard_b64encode(f.read()).decode("ascii")
+        img_bytes = resize_image_to_jpeg_bytes(
+            image_path, max_dim=self.cfg.mistral_max_image_dim
+        )
+        img_b64 = base64.standard_b64encode(img_bytes).decode("ascii")
         resp = self.mistral_client.ocr.process(
             model=self.cfg.mistral_model,
             document={
@@ -129,9 +137,9 @@ class HandwritingOCR:
             if region.confidence is not None
         ]
         avg_conf = sum(confs) / len(confs) if confs else 0.5
-        return OCRResult(text=text.strip(), confidence=avg_conf, provider="mistral")
+        return HandwritingResult(text=text.strip(), confidence=avg_conf, provider="mistral")
 
-    def _call_vlm(self, image_path: Path) -> OCRResult:
+    def _call_vlm(self, image_path: Path) -> HandwritingResult:
         """Fall back to the Claude VLM for handwriting OCR.
 
         Uses tool-use structured output to coerce the model into emitting
@@ -153,8 +161,8 @@ class HandwritingOCR:
                 "additionalProperties": False,
             },
         )
-        return OCRResult(
+        return HandwritingResult(
             text=out.get("text", ""),
             confidence=out.get("confidence", 0.7),
-            provider="claude_vlm",
+            provider="claude",
         )

@@ -85,6 +85,7 @@ class HandwritingOCRConfig(BaseModel):
     provider: Literal["mistral", "claude", "auto"] = "auto"
     mistral_api_key_env_var: str = "MISTRAL_API_KEY"
     mistral_model: str = "mistral-ocr-3"
+    mistral_max_image_dim: int = 2048
     confidence_fallback_threshold: float = 0.6  # below this, fall back to VLM
     use_batch_api: bool = True
 

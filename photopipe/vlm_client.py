@@ -18,30 +18,37 @@ from PIL import Image
 from photopipe.config import get_config
 
 
+def resize_image_to_jpeg_bytes(image_path: Path, max_dim: int = 1568, quality: int = 85) -> bytes:
+    """Resize image to fit max_dim and return JPEG-encoded bytes."""
+    from PIL import Image
+    import io
+    with Image.open(image_path) as img:
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) > max_dim:
+            if w >= h:
+                img = img.resize((max_dim, int(h * max_dim / w)), Image.Resampling.LANCZOS)
+            else:
+                img = img.resize((int(w * max_dim / h), max_dim), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+
+
 def build_image_block(image_path: Path, max_dim: int = 1568) -> dict:
     """Encode a single image as a base64 JPEG content block.
 
     Resizes so the largest dimension is at most `max_dim` (Anthropic's
     1568px vision token grid). Always converts to RGB JPEG for consistency.
     """
-    img = Image.open(image_path)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    w, h = img.size
-    if max(w, h) > max_dim:
-        if w >= h:
-            new_size = (max_dim, int(h * max_dim / w))
-        else:
-            new_size = (int(w * max_dim / h), max_dim)
-        img = img.resize(new_size, Image.Resampling.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img_bytes = resize_image_to_jpeg_bytes(image_path, max_dim=max_dim)
     return {
         "type": "image",
         "source": {
             "type": "base64",
             "media_type": "image/jpeg",
-            "data": base64.standard_b64encode(buf.getvalue()).decode("ascii"),
+            "data": base64.standard_b64encode(img_bytes).decode("ascii"),
         },
     }
 
