@@ -26,6 +26,13 @@ class PathsConfig(BaseModel):
     archive_folder: Path = Field(default=Path.home() / "Pictures" / "Scanned_Photos" / "_archive")
     database: Path = Field(default=Path.home() / ".photopipe" / "photopipe.db")
 
+    def model_post_init(self, __context) -> None:
+        """Expand ~ in all paths after initialization."""
+        object.__setattr__(self, 'input_folder', Path(self.input_folder).expanduser().resolve())
+        object.__setattr__(self, 'output_folder', Path(self.output_folder).expanduser().resolve())
+        object.__setattr__(self, 'archive_folder', Path(self.archive_folder).expanduser().resolve())
+        object.__setattr__(self, 'database', Path(self.database).expanduser().resolve())
+
 
 class ScannerConfig(BaseModel):
     """Scanner and naming pattern configuration."""
