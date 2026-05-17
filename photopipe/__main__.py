@@ -20,7 +20,9 @@ from photopipe.models import Batch, BatchStatus
 from photopipe.pairing import pair_scans, get_pairing_summary
 from photopipe.geocoding import geocode_location
 from photopipe.file_manager import finalize_batch
-from photopipe.ai_dating import estimate_batch_date_with_ai, apply_ai_date_to_batch
+from photopipe.curate_pipeline import run_ai_dating, apply_ai_results
+from photopipe.handwriting_ocr import HandwritingOCR
+from photopipe.models import DateSource
 
 
 def cmd_init(args):
@@ -119,13 +121,15 @@ def cmd_batch_create(args):
 
 
 def cmd_batch_process(args):
-    """Preview or ingest a batch.
+    """Ingest pairs, run handwriting OCR on backs, optionally run AI dating.
 
-    The legacy Tesseract OCR step has been removed. Photo capture +
-    handwriting OCR now live in the GUI capture/curate flow
-    (`streamlit run app.py`), which uses the multi-image VLM pipeline.
-    This CLI command still supports `--preview` and basic ingestion so
-    headless workflows can verify pair counts.
+    Drives the new rebuild pipeline headlessly:
+      - pair_scans ingests fronts/backs from the batch input folder
+      - HandwritingOCR (Mistral OCR 3 → Claude fallback) runs on each back
+      - --ai-dating triggers curate_pipeline.run_ai_dating for multi-image
+        period/location reasoning
+
+    Use `--preview` to inspect pairs without writing anything.
     """
     db = Database()
 
@@ -146,7 +150,7 @@ def cmd_batch_process(args):
         print(f"  Orphaned backs: {summary['orphaned_backs']}")
         return
 
-    # Step 1: Ingest pairs into DB (no OCR — that now happens in capture pipeline)
+    # Step 1: Ingest pairs into DB
     print(f"\n📥 Ingesting photos from {input_folder}...")
     new_photos = pair_scans(input_folder, batch, db)
     print(f"   Ingested {len(new_photos)} new photo pairs")
@@ -155,26 +159,47 @@ def cmd_batch_process(args):
         print("   No new photos to process")
         return
 
-    print(
-        "\nℹ️  OCR + AI dating moved to the GUI capture/curate flow.\n"
-        "   Run `streamlit run app.py` to capture and date these photos."
-    )
+    # Step 2: Handwriting OCR on backs (Mistral OCR 3 → Claude fallback)
+    if not args.skip_ocr:
+        backs = [p for p in new_photos if p.back_path is not None]
+        if backs:
+            print(f"\n📝 Running handwriting OCR on {len(backs)} photo backs...")
+            ocr = HandwritingOCR()
+            for i, photo in enumerate(backs, 1):
+                try:
+                    result = ocr.ocr_back(photo.back_path)
+                    photo.handwriting_ocr_text = result.text
+                    photo.handwriting_ocr_provider = result.provider
+                    photo.handwriting_ocr_confidence = result.confidence
+                    if result.extracted_date:
+                        photo.extracted_date = result.extracted_date
+                        photo.date_source = DateSource.OCR_BACK
+                    db.update_photo(photo)
+                    print(f"   [{i}/{len(backs)}] {photo.front_path.name}: "
+                          f"{result.provider} conf={result.confidence:.2f}")
+                except Exception as e:
+                    print(f"   [{i}/{len(backs)}] {photo.front_path.name}: OCR failed: {e}")
 
-    # Step 2: AI dating (if explicitly requested — still useful headlessly)
+    # Step 3: Multi-image AI dating (curate_pipeline)
     if args.ai_dating:
-        print("\n🤖 Running AI date estimation...")
-        estimate = estimate_batch_date_with_ai(batch, new_photos, db)
-        if estimate:
-            print(f"   Estimated year: {estimate.year}")
-            print(f"   Confidence: {estimate.confidence.value}")
-            updated = apply_ai_date_to_batch(batch, estimate, new_photos, db)
-            print(f"   Applied to {updated} photos")
+        undated = [p for p in new_photos if not p.extracted_date]
+        if undated:
+            print(f"\n🤖 Running AI dating on {len(undated)} undated photos "
+                  f"(multi-image, 12 photos per call)...")
+            result = run_ai_dating(batch, undated, images_per_call=12)
+            print(f"   {len(result.raw_responses)} AI call(s)")
+            if result.coherence.get("segment_breaks"):
+                print(f"   AI detected {len(result.coherence['segment_breaks'])} "
+                      f"segment break(s) — review in the curate UI")
+            applied = apply_ai_results(batch, result, undated, db=db)
+            print(f"   Applied dates to {applied.updated} photos "
+                  f"(skipped {applied.skipped})")
 
     batch.status = BatchStatus.PROCESSING
     db.update_batch(batch)
 
-    print(f"\n✅ Ingest complete!")
-    print(f"   Next: Open `streamlit run app.py` to curate, then finalize.")
+    print(f"\n✅ Process complete!")
+    print(f"   Next: `streamlit run app.py` to curate, then finalize.")
 
 
 def cmd_batch_finalize(args):
@@ -333,7 +358,8 @@ def main():
     batch_process_parser = batch_subparsers.add_parser("process", help="Process a batch")
     batch_process_parser.add_argument("--name", required=True, help="Batch name")
     batch_process_parser.add_argument("--preview", action="store_true", help="Preview only")
-    batch_process_parser.add_argument("--ai-dating", action="store_true", help="Enable AI dating")
+    batch_process_parser.add_argument("--ai-dating", action="store_true", help="Run multi-image AI dating after OCR")
+    batch_process_parser.add_argument("--skip-ocr", action="store_true", help="Skip handwriting OCR on backs")
     batch_process_parser.set_defaults(func=cmd_batch_process)
 
     # batch finalize
