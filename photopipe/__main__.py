@@ -241,6 +241,12 @@ def cmd_batch_delete(args):
     print(f"✅ Deleted batch: {args.name}")
 
 
+def cmd_doctor(args):
+    """Diagnose PhotoPipe environment and exit non-zero on failure."""
+    from photopipe.cli.doctor import run_doctor
+    sys.exit(run_doctor())
+
+
 def cmd_status(args):
     """Show system status."""
     config = get_config()
@@ -304,6 +310,12 @@ def main():
     # status command
     status_parser = subparsers.add_parser("status", help="Show system status")
     status_parser.set_defaults(func=cmd_status)
+
+    # doctor command
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Diagnose common setup issues (deps, scanner, API keys)"
+    )
+    doctor_parser.set_defaults(func=cmd_doctor)
 
     # batch command group
     batch_parser = subparsers.add_parser("batch", help="Batch management commands")
