@@ -1,5 +1,7 @@
 """Tests for photopipe.vlm_client."""
 from unittest.mock import MagicMock
+
+import pytest
 from PIL import Image
 
 from photopipe.vlm_client import VLMClient, build_image_block
@@ -95,6 +97,7 @@ def test_realtime_call_without_schema_returns_text():
     client._anthropic_client = mock_client
 
     text_block = MagicMock()
+    text_block.type = "text"
     text_block.text = "hello world"
     mock_resp = MagicMock()
     mock_resp.content = [text_block]
@@ -155,3 +158,34 @@ def test_poll_batch_returns_results_when_ended():
     result = client.poll_batch("msgbatch_xyz")
     assert result["status"] == "ended"
     assert result["results"] == ["r1", "r2"]
+
+
+def test_cache_ttl_1h_propagates_to_cache_control():
+    client = VLMClient(api_key="fake")
+    client.cache_ttl = "1h"
+    msg = client._build_message(
+        cached_prefix="LONG PREFIX",
+        images=[],
+        per_call_prompt="x",
+    )
+    assert msg["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_cache_ttl_5m_omits_ttl_key():
+    client = VLMClient(api_key="fake")
+    client.cache_ttl = "5m"
+    msg = client._build_message(
+        cached_prefix="LONG PREFIX",
+        images=[],
+        per_call_prompt="x",
+    )
+    # 5m is the default ephemeral TTL — no `ttl` key needed
+    assert msg["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_analyze_propagates_sdk_exceptions():
+    client = VLMClient(api_key="fake")
+    client._anthropic_client = MagicMock()
+    client._anthropic_client.messages.create.side_effect = RuntimeError("rate limit")
+    with pytest.raises(RuntimeError, match="rate limit"):
+        client.analyze(cached_prefix="x", images=[], per_call_prompt="y")

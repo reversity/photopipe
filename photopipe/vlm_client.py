@@ -9,22 +9,13 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from PIL import Image
 
 from photopipe.config import get_config
-
-
-@dataclass
-class PromptSection:
-    """A chunk of prompt text optionally marked for prompt caching."""
-    text: str
-    cached: bool = False  # True => mark with cache_control
 
 
 def build_image_block(image_path: Path, max_dim: int = 1568) -> dict:
@@ -65,6 +56,9 @@ class VLMClient:
 
     The Anthropic SDK client is constructed lazily on first use so tests
     can inject a mock via `client._anthropic_client = <mock>`.
+
+    Exceptions from the Anthropic SDK (rate limits, auth errors, network
+    failures) propagate to the caller; this class does not retry or swallow.
     """
 
     def __init__(
@@ -83,8 +77,25 @@ class VLMClient:
         """Lazily instantiate the Anthropic SDK client."""
         if self._anthropic_client is None:
             import anthropic  # local import: SDK optional at import time
-            self._anthropic_client = anthropic.Anthropic(api_key=self.api_key)
+            headers: dict[str, str] = {}
+            if self.cache_ttl == "1h":
+                headers["anthropic-beta"] = "extended-cache-ttl-2025-04-11"
+            self._anthropic_client = anthropic.Anthropic(
+                api_key=self.api_key,
+                default_headers=headers,
+            )
         return self._anthropic_client
+
+    def _cache_control(self) -> dict:
+        """Build the cache_control block honoring `self.cache_ttl`.
+
+        Default ephemeral cache TTL is 5 minutes; only emit an explicit
+        `ttl` key when a non-default value (e.g. "1h") is configured.
+        """
+        cc: dict = {"type": "ephemeral"}
+        if self.cache_ttl == "1h":
+            cc["ttl"] = "1h"
+        return cc
 
     def _build_message(
         self,
@@ -103,7 +114,7 @@ class VLMClient:
             content.append({
                 "type": "text",
                 "text": cached_prefix,
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": self._cache_control(),
             })
         content.extend(images)
         if per_call_prompt:
@@ -127,6 +138,9 @@ class VLMClient:
         returned directly.
 
         When no schema is provided, returns `{"text": <raw text>}`.
+
+        Exceptions from the Anthropic SDK (rate limits, auth errors, network
+        failures) propagate to the caller; this method does not retry or swallow.
         """
         message = self._build_message(
             cached_prefix=cached_prefix,
@@ -152,15 +166,25 @@ class VLMClient:
             for block in resp.content:
                 if getattr(block, "type", None) == "tool_use":
                     return block.input
-            # Fallback: try to parse text as JSON.
-            return json.loads(resp.content[0].text)
-        return {"text": resp.content[0].text}
+            # No tool_use block found — schema enforcement failed.
+            raise RuntimeError(
+                f"Expected tool_use block from structured-output call, got: "
+                f"{[getattr(b, 'type', '?') for b in resp.content]}"
+            )
+        # When no schema, find first text block.
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                return {"text": block.text}
+        return {"text": ""}
 
     def submit_batch(self, requests: list[dict]) -> str:
         """Submit a Batch API job.
 
         `requests` is a list of `{custom_id, params}` dicts following the
         Anthropic Batch API request shape. Returns the batch job id.
+
+        Exceptions from the Anthropic SDK (rate limits, auth errors, network
+        failures) propagate to the caller; this method does not retry or swallow.
         """
         batch = self.client.messages.batches.create(requests=requests)
         return batch.id
@@ -171,6 +195,9 @@ class VLMClient:
         Returns `{"status": <processing_status>, "results": <list|None>}`.
         Results are materialized (the SDK returns a generator) only when
         the batch has reached the terminal `ended` state.
+
+        Exceptions from the Anthropic SDK (rate limits, auth errors, network
+        failures) propagate to the caller; this method does not retry or swallow.
         """
         batch = self.client.messages.batches.retrieve(job_id)
         result: dict[str, Any] = {
