@@ -59,6 +59,9 @@ def init_session_state():
     if "watcher_running" not in st.session_state:
         st.session_state.watcher_running = False
 
+    if "helper_mode" not in st.session_state:
+        st.session_state.helper_mode = False
+
 
 def main():
     """Main application."""
@@ -70,6 +73,12 @@ def main():
         st.stop()
 
     init_session_state()
+
+    # Helper mode short-circuits the home page entirely: a non-owner helper
+    # who lands on the app just gets the bare scan screen.
+    if st.session_state.get("helper_mode"):
+        st.switch_page("pages/2_capture.py")
+        return
 
     # Sidebar
     with st.sidebar:
@@ -137,6 +146,18 @@ def main():
         with col2:
             if st.button("❓ Help", use_container_width=True):
                 st.switch_page("pages/help.py")
+
+        st.markdown("---")
+        # Helper Mode: hides owner-only pages and redirects to the bare
+        # scan UI. Useful when handing the scanner to a family member.
+        helper_mode = st.toggle(
+            "Helper Mode",
+            value=st.session_state.get("helper_mode", False),
+            help="Hide owner-only pages and show only the scan screen.",
+        )
+        if helper_mode != st.session_state.get("helper_mode", False):
+            st.session_state.helper_mode = helper_mode
+            st.rerun()
 
     # Main content
     st.markdown('<p class="main-header">📷 PhotoPipe</p>', unsafe_allow_html=True)
