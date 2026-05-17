@@ -114,24 +114,33 @@ class AIDateEstimate(BaseModel):
     """AI-generated date estimate from Claude Vision."""
     year: Optional[int] = None
     year_range: Optional[tuple[int, int]] = None
+    month: Optional[int] = None  # 1-12, more specific than season
     season: Optional[str] = None
     confidence: DateConfidence
     evidence: list[str] = Field(default_factory=list)
     reasoning: str
+    location_guess: Optional[str] = None  # AI's guess at location
+    location_confidence: Optional[str] = None  # high/medium/low
+    location_evidence: list[str] = Field(default_factory=list)
 
-    def get_best_date(self) -> Optional[date]:
+    def get_best_date(self, southern_hemisphere: bool = False) -> Optional[date]:
         """Get the best single date estimate."""
         if self.year:
-            month = 6  # Default to middle of year
-            if self.season:
+            # Use month if specified, otherwise derive from season
+            if self.month:
+                month = self.month
+            elif self.season:
+                # Adjust for southern hemisphere (seasons are reversed)
                 season_months = {
-                    "spring": 4,
-                    "summer": 7,
-                    "fall": 10,
-                    "autumn": 10,
-                    "winter": 1,
+                    "spring": 4 if not southern_hemisphere else 10,
+                    "summer": 7 if not southern_hemisphere else 1,
+                    "fall": 10 if not southern_hemisphere else 4,
+                    "autumn": 10 if not southern_hemisphere else 4,
+                    "winter": 1 if not southern_hemisphere else 7,
                 }
                 month = season_months.get(self.season.lower(), 6)
+            else:
+                month = 6  # Default to middle of year
             return date(self.year, month, 15)
         elif self.year_range:
             mid_year = (self.year_range[0] + self.year_range[1]) // 2
@@ -145,6 +154,11 @@ class AIDateEstimate(BaseModel):
     @classmethod
     def from_dict(cls, data: dict) -> "AIDateEstimate":
         """Create from dictionary."""
+        # Handle missing fields for backwards compatibility
+        data.setdefault("month", None)
+        data.setdefault("location_guess", None)
+        data.setdefault("location_confidence", None)
+        data.setdefault("location_evidence", [])
         return cls(**data)
 
 
