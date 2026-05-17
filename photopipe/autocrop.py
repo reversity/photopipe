@@ -1,0 +1,885 @@
+"""
+Auto-crop module for detecting and extracting photos from full-page scans.
+
+The Epson FastFoto scans full pages - this module detects the actual photo
+within the scan and crops to just that region.
+
+Also includes AI-based orientation detection to auto-rotate photos correctly.
+"""
+
+import cv2
+import numpy as np
+import base64
+import io
+import os
+import json
+from pathlib import Path
+from PIL import Image
+from typing import Optional, Tuple
+
+
+def get_anthropic_api_key() -> Optional[str]:
+    """Get the Anthropic API key from settings or environment."""
+    # First try environment variable
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        return api_key
+
+    # Then try settings file
+    settings_path = Path.home() / ".photopipe" / "settings.json"
+    if settings_path.exists():
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+            api_key = settings.get("anthropic_api_key")
+            if api_key:
+                return api_key
+        except Exception:
+            pass
+
+    return None
+
+
+# Standard photo aspect ratios (long side / short side)
+# These are the most common printed photo sizes
+STANDARD_PHOTO_RATIOS = [
+    (1.0, "square"),        # Polaroid, Instagram prints
+    (1.25, "8x10"),         # 8x10 prints
+    (1.33, "4x5"),          # 4x5 prints (close to 4:3)
+    (1.4, "5x7"),           # 5x7 prints
+    (1.43, "3.5x5"),        # 3.5x5 prints
+    (1.5, "4x6"),           # 4x6 prints (most common, 2:3)
+    (1.667, "3x5"),         # 3x5 prints (older format)
+]
+
+# Tolerance for matching ratios (as a fraction of the ratio)
+# 5% tolerance catches slight variations while rejecting truly wrong crops
+RATIO_TOLERANCE = 0.05
+
+
+def find_closest_standard_ratio(width: int, height: int) -> Tuple[float, str]:
+    """
+    Find the closest standard photo ratio for given dimensions.
+
+    Args:
+        width: Image width
+        height: Image height
+
+    Returns:
+        Tuple of (ratio, name) for the closest standard ratio
+    """
+    # Calculate aspect ratio (always as larger/smaller)
+    if width >= height:
+        current_ratio = width / height
+    else:
+        current_ratio = height / width
+
+    # Find the closest standard ratio
+    best_ratio = STANDARD_PHOTO_RATIOS[0]
+    best_diff = abs(current_ratio - best_ratio[0])
+
+    for ratio, name in STANDARD_PHOTO_RATIOS:
+        diff = abs(current_ratio - ratio)
+        if diff < best_diff:
+            best_diff = diff
+            best_ratio = (ratio, name)
+
+    return best_ratio
+
+
+def is_standard_ratio(width: int, height: int) -> bool:
+    """
+    Check if dimensions match a standard photo ratio.
+
+    Args:
+        width: Image width
+        height: Image height
+
+    Returns:
+        True if within tolerance of a standard ratio
+    """
+    if width >= height:
+        current_ratio = width / height
+    else:
+        current_ratio = height / width
+
+    for ratio, _ in STANDARD_PHOTO_RATIOS:
+        if abs(current_ratio - ratio) / ratio <= RATIO_TOLERANCE:
+            return True
+
+    return False
+
+
+def adjust_crop_to_standard_ratio(
+    x: int, y: int, w: int, h: int,
+    image_width: int, image_height: int
+) -> Tuple[int, int, int, int]:
+    """
+    Adjust crop region to match the closest standard photo ratio.
+
+    Expands the crop slightly if possible, otherwise contracts it,
+    to achieve a standard aspect ratio while keeping the center point.
+
+    Args:
+        x, y, w, h: Current crop region
+        image_width, image_height: Full image dimensions
+
+    Returns:
+        Adjusted (x, y, w, h) tuple
+    """
+    # Already standard? Keep it
+    if is_standard_ratio(w, h):
+        return (x, y, w, h)
+
+    # Find target ratio
+    target_ratio, ratio_name = find_closest_standard_ratio(w, h)
+
+    # Determine orientation
+    is_landscape = w >= h
+
+    # Calculate center of current crop
+    center_x = x + w // 2
+    center_y = y + h // 2
+
+    if is_landscape:
+        # Landscape: width is the long side
+        # Try to keep width, adjust height
+        target_h = int(w / target_ratio)
+        target_w = w
+
+        # If target height is taller than we have, adjust width instead
+        if target_h > h:
+            # Need more height than available - shrink width to match height
+            target_w = int(h * target_ratio)
+            target_h = h
+    else:
+        # Portrait: height is the long side
+        # Try to keep height, adjust width
+        target_w = int(h / target_ratio)
+        target_h = h
+
+        # If target width is wider than we have, adjust height instead
+        if target_w > w:
+            # Need more width than available - shrink height to match width
+            target_h = int(w * target_ratio)
+            target_w = w
+
+    # Calculate new position to keep center
+    new_x = center_x - target_w // 2
+    new_y = center_y - target_h // 2
+
+    # Clamp to image bounds
+    new_x = max(0, min(new_x, image_width - target_w))
+    new_y = max(0, min(new_y, image_height - target_h))
+
+    # Final bounds check
+    if new_x + target_w > image_width:
+        target_w = image_width - new_x
+    if new_y + target_h > image_height:
+        target_h = image_height - new_y
+
+    return (new_x, new_y, target_w, target_h)
+
+
+def detect_photo_region(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Detect the photo region within a full-page scan.
+
+    Args:
+        image: OpenCV image (BGR format)
+
+    Returns:
+        Tuple of (x, y, width, height) or None if no photo detected
+    """
+    height, width = image.shape[:2]
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Apply Gaussian blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Use adaptive thresholding to find edges
+    # This works well for photos on white/light backgrounds
+    thresh = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 11, 2
+    )
+
+    # Also try edge detection for better results
+    edges = cv2.Canny(blurred, 30, 100)
+
+    # Combine threshold and edges
+    combined = cv2.bitwise_or(thresh, edges)
+
+    # Dilate to connect nearby edges
+    kernel = np.ones((5, 5), np.uint8)
+    dilated = cv2.dilate(combined, kernel, iterations=3)
+
+    # Find contours
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return None
+
+    # Find the largest contour that's roughly rectangular and not the full page
+    best_rect = None
+    best_area = 0
+    page_area = width * height
+    min_area = page_area * 0.05  # At least 5% of page
+    max_area = page_area * 0.85  # No more than 85% of page
+
+    for contour in contours:
+        # Get bounding rectangle
+        x, y, w, h = cv2.boundingRect(contour)
+        area = w * h
+
+        # Filter by size
+        if area < min_area or area > max_area:
+            continue
+
+        # Check aspect ratio (photos are typically 3:2 to 5:4, Polaroids are more square)
+        aspect = max(w, h) / min(w, h) if min(w, h) > 0 else 999
+        if aspect > 3:  # Too elongated
+            continue
+
+        # Prefer larger areas
+        if area > best_area:
+            best_area = area
+            best_rect = (x, y, w, h)
+
+    return best_rect
+
+
+def detect_photo_by_color(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Detect photo region by looking for non-white areas.
+
+    This is a fallback method that looks for the region that isn't
+    pure white (the scanner background).
+
+    Args:
+        image: OpenCV image (BGR format)
+
+    Returns:
+        Tuple of (x, y, width, height) or None if no photo detected
+    """
+    height, width = image.shape[:2]
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Find pixels that aren't pure white (< 250)
+    # The scanner background is typically pure white (255)
+    mask = gray < 250
+
+    # Find the bounding box of non-white pixels
+    coords = np.column_stack(np.where(mask))
+    if len(coords) == 0:
+        return None
+
+    y_min, x_min = coords.min(axis=0)
+    y_max, x_max = coords.max(axis=0)
+
+    # Add small padding
+    padding = 10
+    x_min = max(0, x_min - padding)
+    y_min = max(0, y_min - padding)
+    x_max = min(width, x_max + padding)
+    y_max = min(height, y_max + padding)
+
+    w = x_max - x_min
+    h = y_max - y_min
+
+    # Sanity check - should be at least 10% of the page
+    if w * h < (width * height * 0.1):
+        return None
+
+    return (x_min, y_min, w, h)
+
+
+def auto_crop_photo(input_path: Path, output_path: Optional[Path] = None) -> bool:
+    """
+    Auto-crop a scanned image to just the photo region.
+
+    Args:
+        input_path: Path to the scanned image
+        output_path: Path to save cropped image (defaults to overwriting input)
+
+    Returns:
+        True if cropping was successful, False otherwise
+    """
+    if output_path is None:
+        output_path = input_path
+
+    try:
+        # Load image with OpenCV
+        image = cv2.imread(str(input_path))
+        if image is None:
+            return False
+
+        height, width = image.shape[:2]
+
+        # Try contour-based detection first
+        rect = detect_photo_region(image)
+
+        # Fall back to color-based detection
+        if rect is None:
+            rect = detect_photo_by_color(image)
+
+        if rect is None:
+            # No photo detected, keep original
+            return False
+
+        x, y, w, h = rect
+
+        # Adjust crop to standard photo ratio before trimming borders
+        # This ensures we're targeting a real photo size
+        x, y, w, h = adjust_crop_to_standard_ratio(x, y, w, h, width, height)
+
+        # Add additional margin trimming to remove scanner bed border
+        # The scanner bed is light blue/gray - trim any border that's close to that color
+        cropped = image[y:y+h, x:x+w]
+
+        # Trim light blue/gray borders more aggressively
+        cropped = trim_scanner_border(cropped)
+
+        # After border trimming, adjust again to standard ratio
+        crop_h, crop_w = cropped.shape[:2]
+        if not is_standard_ratio(crop_w, crop_h):
+            # Re-adjust to standard ratio
+            _, _, new_w, new_h = adjust_crop_to_standard_ratio(0, 0, crop_w, crop_h, crop_w, crop_h)
+            # Center the final crop
+            trim_x = (crop_w - new_w) // 2
+            trim_y = (crop_h - new_h) // 2
+            cropped = cropped[trim_y:trim_y+new_h, trim_x:trim_x+new_w]
+
+        # Save the cropped image
+        cv2.imwrite(str(output_path), cropped, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+        return True
+
+    except Exception as e:
+        print(f"Auto-crop error: {e}")
+        return False
+
+
+def trim_scanner_border(image: np.ndarray, threshold: int = 20) -> np.ndarray:
+    """
+    Trim the light blue/gray scanner bed border from an image.
+
+    The scanner bed is approximately RGB (200, 210, 220) - a light blue-gray.
+    This function trims rows/columns from edges that match this color.
+
+    Args:
+        image: BGR image array
+        threshold: How many pixels from edge to check
+
+    Returns:
+        Trimmed image
+    """
+    height, width = image.shape[:2]
+
+    # Scanner bed color detection - more permissive to catch variations
+    def is_scanner_border_color(pixel_mean):
+        """Check if a mean color matches scanner bed (light blue-gray)."""
+        if len(pixel_mean) >= 3:
+            b, g, r = pixel_mean[:3]
+            # Scanner bed is light gray-blue: high values, relatively uniform, slight blue tint
+            # Also catch pure light gray areas
+            is_light = b > 170 and g > 170 and r > 170
+            is_uniform = abs(b - g) < 40 and abs(g - r) < 40
+            return is_light and is_uniform
+        return False
+
+    def is_scanner_border_row(row):
+        """Check if a row is mostly scanner bed color."""
+        mean_color = np.mean(row, axis=0)
+        return is_scanner_border_color(mean_color)
+
+    def is_scanner_border_col(col):
+        """Check if a column is mostly scanner bed color."""
+        mean_color = np.mean(col, axis=0)
+        return is_scanner_border_color(mean_color)
+
+    def find_content_start(check_func, start, end, step):
+        """Find where actual content starts by looking for sustained non-border region."""
+        consecutive_content = 0
+        required_consecutive = 5  # Need 5 consecutive non-border rows/cols
+        last_border = start
+
+        for i in range(start, end, step):
+            if check_func(i):
+                # This is a border row/col
+                consecutive_content = 0
+                last_border = i
+            else:
+                consecutive_content += 1
+                if consecutive_content >= required_consecutive:
+                    # Found sustained content, return position just past last border
+                    return last_border + step if step > 0 else last_border + step
+        return start
+
+    # Find borders with sustained content detection
+    # Search up to 40% of image dimension or 1500px, whichever is larger
+    max_border_search = 1500
+
+    # Top border - scan down looking for 5 consecutive content rows
+    top = 0
+    consecutive_content = 0
+    for i in range(min(height * 2 // 5, max_border_search)):
+        if is_scanner_border_row(image[i]):
+            consecutive_content = 0
+            top = i + 1
+        else:
+            consecutive_content += 1
+            if consecutive_content >= 5:
+                break
+
+    # Bottom border - scan up looking for 5 consecutive content rows
+    bottom = height
+    consecutive_content = 0
+    for i in range(height - 1, max(height * 3 // 5, height - max_border_search), -1):
+        if is_scanner_border_row(image[i]):
+            consecutive_content = 0
+            bottom = i
+        else:
+            consecutive_content += 1
+            if consecutive_content >= 5:
+                break
+
+    # Left border - scan right looking for 5 consecutive content cols
+    left = 0
+    consecutive_content = 0
+    for i in range(min(width * 2 // 5, max_border_search)):
+        if is_scanner_border_col(image[:, i]):
+            consecutive_content = 0
+            left = i + 1
+        else:
+            consecutive_content += 1
+            if consecutive_content >= 5:
+                break
+
+    # Right border - scan left looking for 5 consecutive content cols
+    right = width
+    consecutive_content = 0
+    for i in range(width - 1, max(width * 3 // 5, width - max_border_search), -1):
+        if is_scanner_border_col(image[:, i]):
+            consecutive_content = 0
+            right = i
+        else:
+            consecutive_content += 1
+            if consecutive_content >= 5:
+                break
+
+    # Ensure we have a valid crop region (at least 50% of original in each dimension)
+    if right <= left or bottom <= top:
+        return image
+    if (right - left) < width * 0.5 or (bottom - top) < height * 0.5:
+        return image  # Cropped too much, return original
+
+    # Small margin to avoid cutting into photo
+    margin = 3
+    top = max(0, top - margin)
+    left = max(0, left - margin)
+    bottom = min(height, bottom + margin)
+    right = min(width, right + margin)
+
+    return image[top:bottom, left:right]
+
+
+def auto_rotate_photo(input_path: Path, output_path: Optional[Path] = None) -> bool:
+    """
+    Auto-rotate is disabled - photos are fed in different orientations.
+
+    Use rotate_photo() for manual rotation via UI controls.
+
+    Args:
+        input_path: Path to the image
+        output_path: Path to save rotated image (defaults to overwriting input)
+
+    Returns:
+        False (no auto-rotation performed)
+    """
+    # Auto-rotation disabled - photos have different orientations
+    # User should use manual rotation buttons in the UI
+    return False
+
+
+def rotate_photo(input_path: Path, degrees: int) -> bool:
+    """
+    Rotate a photo by specified degrees.
+
+    Args:
+        input_path: Path to the image
+        degrees: Rotation in degrees (90, 180, 270, -90, etc.)
+
+    Returns:
+        True if successful
+    """
+    try:
+        img = Image.open(input_path)
+        img = img.rotate(degrees, expand=True)
+        img.save(input_path, quality=95)
+        return True
+    except Exception as e:
+        print(f"Rotate error: {e}")
+        return False
+
+
+ORIENTATION_PROMPT = """Look at this photo. Which edge of the image should be the TOP when correctly oriented?
+
+Think step by step:
+1. If there are people, their heads should be at the top
+2. If there's sky or ceiling, it should be at the top
+3. If there are buildings or trees, they should grow upward
+4. If there's text, it should be readable right-side up
+
+Which edge currently contains what should be at the TOP of the image?
+
+Answer with exactly ONE word:
+- TOP (image is already correct - the top edge should stay on top)
+- BOTTOM (image is upside down - the bottom edge should be on top)
+- LEFT (image needs to rotate - the left edge should be on top)
+- RIGHT (image needs to rotate - the right edge should be on top)"""
+
+
+def detect_orientation_with_ai(image_path: Path) -> int:
+    """
+    Use Claude Vision to detect the correct orientation of a photo.
+
+    Args:
+        image_path: Path to the photo
+
+    Returns:
+        Rotation needed in degrees (0, 90, 180, or 270)
+        Note: PIL rotates counter-clockwise, so:
+        - 90 = counter-clockwise (what we call rotate_left)
+        - 270 = clockwise (what we call rotate_right)
+    """
+    try:
+        import anthropic
+    except ImportError:
+        print("anthropic package not installed")
+        return 0
+
+    api_key = get_anthropic_api_key()
+    if not api_key:
+        print("No Anthropic API key found")
+        return 0
+
+    try:
+        # Load and resize image for API
+        img = Image.open(image_path)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Use larger size for better orientation detection
+        max_dim = 1024
+        width, height = img.size
+        if width > max_dim or height > max_dim:
+            if width > height:
+                new_width = max_dim
+                new_height = int(height * (max_dim / width))
+            else:
+                new_height = max_dim
+                new_width = int(width * (max_dim / height))
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        # Convert to base64
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+        image_base64 = base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
+
+        # Call Claude
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=100,  # Give room to think
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_base64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": ORIENTATION_PROMPT,
+                        },
+                    ],
+                }
+            ],
+        )
+
+        result = response.content[0].text.strip().upper()
+        print(f"AI orientation detection for {image_path.name}: {result}")
+
+        # Parse the response - which edge should be TOP?
+        # PIL rotate() rotates counter-clockwise by default
+        # We need to rotate so the named edge becomes the new top
+
+        if "TOP" in result:
+            # Already correct
+            return 0
+        elif "BOTTOM" in result:
+            # Upside down - rotate 180
+            return 180
+        elif "LEFT" in result:
+            # Left edge should become top - rotate clockwise 90°
+            # PIL: clockwise = negative degrees
+            return -90
+        elif "RIGHT" in result:
+            # Right edge should become top - rotate counter-clockwise 90°
+            # PIL: counter-clockwise = positive degrees
+            return 90
+        else:
+            print(f"Unexpected orientation response: {result}")
+            return 0
+
+    except Exception as e:
+        print(f"AI orientation detection error: {e}")
+        return 0
+
+
+def auto_orient_photo(input_path: Path) -> int:
+    """
+    Automatically orient a photo using AI detection.
+
+    Args:
+        input_path: Path to the photo
+
+    Returns:
+        Degrees rotated (0 if no rotation needed)
+    """
+    rotation = detect_orientation_with_ai(input_path)
+
+    if rotation != 0:
+        rotate_photo(input_path, rotation)
+
+    return rotation
+
+
+def get_photo_ratio_info(image_path: Path) -> dict:
+    """
+    Get aspect ratio information for a photo.
+
+    Args:
+        image_path: Path to the photo
+
+    Returns:
+        Dict with ratio information
+    """
+    try:
+        img = Image.open(image_path)
+        width, height = img.size
+        ratio, ratio_name = find_closest_standard_ratio(width, height)
+        is_standard = is_standard_ratio(width, height)
+
+        if width >= height:
+            actual_ratio = width / height
+        else:
+            actual_ratio = height / width
+
+        return {
+            "width": width,
+            "height": height,
+            "actual_ratio": round(actual_ratio, 3),
+            "closest_standard": ratio_name,
+            "standard_ratio": ratio,
+            "is_standard": is_standard,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def process_scanned_photo(input_path: Path, output_path: Optional[Path] = None, use_ai_orientation: bool = True) -> dict:
+    """
+    Process a scanned photo: auto-crop and auto-orient using AI.
+
+    Args:
+        input_path: Path to the scanned image
+        output_path: Path to save processed image (defaults to overwriting input)
+        use_ai_orientation: Whether to use AI to detect and correct orientation
+
+    Returns:
+        Dict with processing results
+    """
+    if output_path is None:
+        output_path = input_path
+
+    results = {
+        "cropped": False,
+        "rotated": False,
+        "rotation_degrees": 0,
+        "ratio_info": None,
+        "error": None,
+    }
+
+    try:
+        # Step 1: Auto-crop to photo region
+        results["cropped"] = auto_crop_photo(input_path, output_path)
+
+        # Step 2: Auto-orient using AI (use output_path since it may have been cropped)
+        if use_ai_orientation:
+            target_path = output_path if results["cropped"] else input_path
+            rotation = auto_orient_photo(target_path)
+            results["rotated"] = rotation != 0
+            results["rotation_degrees"] = rotation
+
+        # Step 3: Get ratio info for the final image
+        final_path = output_path if output_path.exists() else input_path
+        results["ratio_info"] = get_photo_ratio_info(final_path)
+
+    except Exception as e:
+        results["error"] = str(e)
+
+    return results
+
+
+def detect_which_is_front(image_a_path: Path, image_b_path: Path) -> str:
+    """
+    Use AI to determine which of two images is the photo front vs back.
+
+    In duplex scanning, one side has the actual photo, the other side
+    might be blank, have handwriting, or stamps.
+
+    Args:
+        image_a_path: First image (scanner's "front")
+        image_b_path: Second image (scanner's "back")
+
+    Returns:
+        "a" if image_a is the photo front, "b" if image_b is the photo front
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return "a"  # Default to first image
+
+    api_key = get_anthropic_api_key()
+    if not api_key:
+        print("No Anthropic API key found for front/back detection")
+        return "a"
+
+    prompt = """I'm showing you two scans from opposite sides of the same photograph.
+
+One side is the FRONT of the photo (the actual photograph with people, scenery, etc.)
+The other side is the BACK of the photo (usually blank, or might have handwriting, dates, stamps, or processing marks).
+
+Which image shows the FRONT of the photograph (the actual picture)?
+
+Answer with ONLY the word "first" or "second" - nothing else."""
+
+    try:
+        # Load and resize both images
+        def prepare_image(path):
+            img = Image.open(path)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            max_dim = 512
+            width, height = img.size
+            if width > max_dim or height > max_dim:
+                if width > height:
+                    new_width = max_dim
+                    new_height = int(height * (max_dim / width))
+                else:
+                    new_height = max_dim
+                    new_width = int(width * (max_dim / height))
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=70)
+            return base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
+
+        image_a_base64 = prepare_image(image_a_path)
+        image_b_base64 = prepare_image(image_b_path)
+
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=10,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Image 1 (first):",
+                        },
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_a_base64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "Image 2 (second):",
+                        },
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_b_base64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                }
+            ],
+        )
+
+        result = response.content[0].text.strip().lower()
+
+        if "first" in result:
+            return "a"
+        elif "second" in result:
+            return "b"
+        else:
+            return "a"  # Default
+
+    except Exception as e:
+        print(f"Front/back detection error: {e}")
+        return "a"
+
+
+def batch_process_photos(input_folder: Path, pattern: str = "*.jpg") -> dict:
+    """
+    Process all photos in a folder.
+
+    Args:
+        input_folder: Folder containing scanned images
+        pattern: Glob pattern for images
+
+    Returns:
+        Summary of processing results
+    """
+    summary = {
+        "total": 0,
+        "cropped": 0,
+        "rotated": 0,
+        "errors": 0,
+    }
+
+    for image_path in input_folder.glob(pattern):
+        summary["total"] += 1
+        results = process_scanned_photo(image_path)
+
+        if results["cropped"]:
+            summary["cropped"] += 1
+        if results["rotated"]:
+            summary["rotated"] += 1
+        if results["error"]:
+            summary["errors"] += 1
+
+    return summary
