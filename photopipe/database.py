@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional, Generator
 
 from photopipe.config import get_config
+from photopipe.migrations import run_all_migrations
 from photopipe.models import (
     Batch,
     BatchStatus,
@@ -136,9 +137,15 @@ class Database:
         self._init_schema()
 
     def _init_schema(self) -> None:
-        """Initialize database schema."""
+        """Initialize database schema.
+
+        Runs the legacy ``SCHEMA`` script (so fresh DBs have all base tables)
+        and then applies any pending migrations from
+        :mod:`photopipe.migrations` (so existing DBs pick up new columns).
+        """
         with self.connection() as conn:
             conn.executescript(SCHEMA)
+            run_all_migrations(conn)
 
     @contextmanager
     def connection(self) -> Generator[sqlite3.Connection, None, None]:

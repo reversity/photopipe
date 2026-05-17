@@ -45,6 +45,28 @@ class BatchStatus(str, Enum):
     COMPLETE = "complete"
 
 
+class PhotoPhase(str, Enum):
+    """Lifecycle phase of a photo in the rebuild pipeline."""
+    CAPTURED = "captured"
+    CURATED = "curated"
+    FINALIZED = "finalized"
+
+
+class BucketStatus(str, Enum):
+    """Lifecycle status of a capture bucket."""
+    OPEN = "open"
+    CLOSED = "closed"
+    CONVERTED = "converted"
+
+
+class AIJobStatus(str, Enum):
+    """Status of an AI batch job."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class LocationAccuracy(str, Enum):
     """Accuracy level of geocoded location."""
     EXACT = "exact"
@@ -150,8 +172,15 @@ class PhotoPair(BaseModel):
 
     # Processing state
     status: PhotoStatus = PhotoStatus.INGESTED
+    phase: PhotoPhase = PhotoPhase.FINALIZED
+    bucket_id: Optional[str] = None
     needs_review: bool = False
     review_notes: Optional[str] = None
+
+    # Handwriting OCR (from rebuild pipeline)
+    handwriting_ocr_text: Optional[str] = None
+    handwriting_ocr_provider: Optional[str] = None
+    handwriting_ocr_confidence: Optional[float] = None
 
     # Output paths
     output_front_path: Optional[Path] = None
@@ -348,3 +377,27 @@ class BatchReport(BaseModel):
         """Convert to JSON string."""
         import json
         return json.dumps(self.model_dump(), indent=2, default=str)
+
+
+class Bucket(BaseModel):
+    """A capture bucket: a working collection of photos before batch conversion."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    label: str
+    helper_name: Optional[str] = None
+    status: BucketStatus = BucketStatus.OPEN
+    batch_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    closed_at: Optional[datetime] = None
+
+
+class AIJob(BaseModel):
+    """A queued or running AI analysis job for a batch."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    batch_id: str
+    provider: str  # e.g. "anthropic_batch"
+    provider_job_id: Optional[str] = None
+    status: AIJobStatus = AIJobStatus.QUEUED
+    submitted_at: datetime = Field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+    photo_ids: list[str] = Field(default_factory=list)
+    result_summary: Optional[dict] = None
