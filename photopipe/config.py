@@ -75,6 +75,20 @@ class VLMConfig(BaseModel):
     batch_api_threshold: int = 50  # use Batch API when >= this many photos
 
 
+class HandwritingOCRConfig(BaseModel):
+    """Handwriting OCR (photo backs) configuration.
+
+    Primary provider is Mistral OCR 3; falls back to the Claude VLM
+    when Mistral confidence drops below ``confidence_fallback_threshold``
+    (and the user has not pinned ``provider="mistral"``).
+    """
+    provider: Literal["mistral", "claude", "auto"] = "auto"
+    mistral_api_key_env_var: str = "MISTRAL_API_KEY"
+    mistral_model: str = "mistral-ocr-3"
+    confidence_fallback_threshold: float = 0.6  # below this, fall back to VLM
+    use_batch_api: bool = True
+
+
 class MetadataConfig(BaseModel):
     """Metadata defaults configuration."""
     default_timezone: str = "America/New_York"
@@ -103,6 +117,7 @@ class Config(BaseModel):
     ocr: OCRConfig = Field(default_factory=OCRConfig)
     ai_dating: AIDatingConfig = Field(default_factory=AIDatingConfig)
     vlm: VLMConfig = Field(default_factory=VLMConfig)
+    handwriting_ocr: HandwritingOCRConfig = Field(default_factory=HandwritingOCRConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
