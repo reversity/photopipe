@@ -15,17 +15,31 @@ from photopipe.models import PhotoPair, Batch, Location
 from photopipe.geocoding import parse_location_components
 
 
+def get_exiftool_path() -> Optional[str]:
+    """Find the exiftool executable."""
+    # Try common locations
+    paths_to_try = [
+        "exiftool",  # In PATH
+        "/opt/homebrew/bin/exiftool",  # Homebrew on Apple Silicon
+        "/usr/local/bin/exiftool",  # Homebrew on Intel Mac
+    ]
+    for path in paths_to_try:
+        try:
+            result = subprocess.run(
+                [path, "-ver"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                return path
+        except FileNotFoundError:
+            continue
+    return None
+
+
 def check_exiftool_installed() -> bool:
     """Check if ExifTool is installed and accessible."""
-    try:
-        result = subprocess.run(
-            ["exiftool", "-ver"],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
+    return get_exiftool_path() is not None
 
 
 def read_metadata(image_path: Path) -> dict:
@@ -38,9 +52,13 @@ def read_metadata(image_path: Path) -> dict:
     Returns:
         Dictionary of metadata tags
     """
+    exiftool = get_exiftool_path()
+    if not exiftool:
+        return {}
+
     try:
         result = subprocess.run(
-            ["exiftool", "-json", str(image_path)],
+            [exiftool, "-json", str(image_path)],
             capture_output=True,
             text=True,
         )
@@ -224,14 +242,15 @@ def write_metadata(
     Returns:
         True if successful, False otherwise
     """
-    if not check_exiftool_installed():
+    exiftool = get_exiftool_path()
+    if not exiftool:
         raise RuntimeError("ExifTool is not installed. Please install with: brew install exiftool")
 
     args = build_exiftool_args(photo, batch, output_path)
 
     try:
         result = subprocess.run(
-            ["exiftool"] + args,
+            [exiftool] + args,
             capture_output=True,
             text=True,
         )
@@ -280,10 +299,14 @@ def copy_metadata(source_path: Path, dest_path: Path) -> bool:
     Returns:
         True if successful
     """
+    exiftool = get_exiftool_path()
+    if not exiftool:
+        return False
+
     try:
         result = subprocess.run(
             [
-                "exiftool",
+                exiftool,
                 "-TagsFromFile", str(source_path),
                 "-all:all",
                 "-overwrite_original",
@@ -307,10 +330,14 @@ def strip_metadata(image_path: Path) -> bool:
     Returns:
         True if successful
     """
+    exiftool = get_exiftool_path()
+    if not exiftool:
+        return False
+
     try:
         result = subprocess.run(
             [
-                "exiftool",
+                exiftool,
                 "-all=",
                 "-overwrite_original",
                 str(image_path),

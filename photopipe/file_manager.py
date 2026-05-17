@@ -101,24 +101,22 @@ def generate_output_filename(
     return f"{filename}{ext}"
 
 
-def generate_output_folder(batch: Batch, photo_date: Optional[date] = None) -> Path:
+def generate_output_folder(batch: Batch) -> Path:
     """
-    Generate output folder path based on template.
+    Generate output folder path based on batch date.
+
+    All photos in a batch go to the same folder based on the batch start date.
 
     Args:
         batch: Batch to generate folder for
-        photo_date: Optional specific date (uses batch date range if not provided)
 
     Returns:
-        Output folder path
+        Output folder path (with ~ expanded)
     """
     config = get_config()
 
-    # Get date for folder structure
-    if photo_date:
-        year = str(photo_date.year)
-        month = f"{photo_date.month:02d}"
-    elif batch.date_start:
+    # Get date for folder structure - always use batch date to keep photos together
+    if batch.date_start:
         year = str(batch.date_start.year)
         month = f"{batch.date_start.month:02d}"
     else:
@@ -135,7 +133,9 @@ def generate_output_folder(batch: Batch, photo_date: Optional[date] = None) -> P
         batch_name=batch_name,
     )
 
-    return config.paths.output_folder / folder_path
+    # Expand ~ and return absolute path
+    output_folder = config.paths.output_folder / folder_path
+    return Path(output_folder).expanduser().resolve()
 
 
 def copy_to_archive(photo: PhotoPair, batch: Batch) -> tuple[Optional[Path], Optional[Path]]:
@@ -152,7 +152,7 @@ def copy_to_archive(photo: PhotoPair, batch: Batch) -> tuple[Optional[Path], Opt
     config = get_config()
     batch_name = sanitize_filename(batch.name)
 
-    archive_folder = config.paths.archive_folder / batch_name
+    archive_folder = (config.paths.archive_folder / batch_name).expanduser().resolve()
     archive_folder.mkdir(parents=True, exist_ok=True)
 
     # Copy front
@@ -196,9 +196,8 @@ def finalize_photo(
     if archive_originals and config.output.preserve_originals:
         copy_to_archive(photo, batch)
 
-    # Determine output folder
-    photo_date = photo.final_date or photo.extracted_date
-    output_folder = generate_output_folder(batch, photo_date)
+    # Determine output folder - all photos in batch go to same folder
+    output_folder = generate_output_folder(batch)
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # Generate unique output filename for front
@@ -207,7 +206,14 @@ def finalize_photo(
     front_output = output_folder / front_filename
 
     # Copy front image
+    if not photo.front_path.exists():
+        raise FileNotFoundError(f"Source file not found: {photo.front_path}")
+
     shutil.copy2(photo.front_path, front_output)
+
+    # Verify copy succeeded
+    if not front_output.exists():
+        raise IOError(f"Failed to copy file to: {front_output}")
 
     # Write metadata to front
     write_metadata(photo, batch, front_output)
@@ -241,6 +247,7 @@ def finalize_batch(
     batch: Batch,
     db: Database,
     auto_approve_high_confidence: bool = False,
+    finalize_all: bool = False,
     progress_callback: Optional[callable] = None,
 ) -> BatchReport:
     """
@@ -250,6 +257,7 @@ def finalize_batch(
         batch: Batch to finalize
         db: Database instance
         auto_approve_high_confidence: Auto-approve photos with high confidence dates
+        finalize_all: Finalize all photos regardless of review status
         progress_callback: Optional callback(current, total) for progress
 
     Returns:
@@ -268,12 +276,20 @@ def finalize_batch(
     for i, photo in enumerate(photos):
         # Auto-approve high confidence if enabled
         if auto_approve_high_confidence:
-            if photo.date_confidence == "high" and photo.extracted_date:
+            # Handle both enum and string values for date_confidence
+            confidence_val = photo.date_confidence.value if hasattr(photo.date_confidence, 'value') else photo.date_confidence
+            source_val = photo.date_source.value if hasattr(photo.date_source, 'value') else photo.date_source
+
+            if confidence_val == "high" and photo.extracted_date:
+                photo.final_date = photo.extracted_date
+                photo.needs_review = False
+            # Also auto-approve AI-estimated dates
+            elif source_val == "ai_estimated" and photo.extracted_date:
                 photo.final_date = photo.extracted_date
                 photo.needs_review = False
 
-        # Skip photos that still need review (unless auto-approved)
-        if photo.needs_review and not auto_approve_high_confidence:
+        # Skip photos that still need review (unless finalize_all or auto-approved)
+        if photo.needs_review and not finalize_all and not auto_approve_high_confidence:
             continue
 
         # If no final date set, use extracted or batch default
@@ -292,7 +308,10 @@ def finalize_batch(
         finalized_photos.append(photo)
 
         # Track statistics
-        source = photo.date_source.value if photo.date_source else "none"
+        if photo.date_source:
+            source = photo.date_source.value if hasattr(photo.date_source, 'value') else photo.date_source
+        else:
+            source = "none"
         date_sources[source] = date_sources.get(source, 0) + 1
 
         if photo.final_date:
@@ -331,8 +350,8 @@ def finalize_batch(
                 "final_name": photo.output_front_path.name if photo.output_front_path else None,
                 "original_name": photo.front_path.name,
                 "date": photo.final_date.isoformat() if photo.final_date else None,
-                "date_source": photo.date_source.value if photo.date_source else None,
-                "date_confidence": photo.date_confidence.value if photo.date_confidence else None,
+                "date_source": (photo.date_source.value if hasattr(photo.date_source, 'value') else photo.date_source) if photo.date_source else None,
+                "date_confidence": (photo.date_confidence.value if hasattr(photo.date_confidence, 'value') else photo.date_confidence) if photo.date_confidence else None,
                 "has_back": photo.back_path is not None,
             }
             for photo in finalized_photos
