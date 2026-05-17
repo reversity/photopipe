@@ -65,6 +65,16 @@ class AIDatingConfig(BaseModel):
     max_image_dimension: int = 1024
 
 
+class VLMConfig(BaseModel):
+    """Vision-language model transport configuration."""
+    provider: Literal["anthropic"] = "anthropic"
+    model: str = "claude-sonnet-4-6"
+    api_key_env_var: str = "ANTHROPIC_API_KEY"
+    max_image_dimension: int = 1568  # matches Claude vision token grid
+    cache_ttl: Literal["5m", "1h"] = "5m"
+    batch_api_threshold: int = 50  # use Batch API when >= this many photos
+
+
 class MetadataConfig(BaseModel):
     """Metadata defaults configuration."""
     default_timezone: str = "America/New_York"
@@ -92,6 +102,7 @@ class Config(BaseModel):
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     ocr: OCRConfig = Field(default_factory=OCRConfig)
     ai_dating: AIDatingConfig = Field(default_factory=AIDatingConfig)
+    vlm: VLMConfig = Field(default_factory=VLMConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
