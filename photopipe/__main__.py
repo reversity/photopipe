@@ -18,7 +18,6 @@ from photopipe.config import get_config, save_config
 from photopipe.database import Database
 from photopipe.models import Batch, BatchStatus
 from photopipe.pairing import pair_scans, get_pairing_summary
-from photopipe.ocr import process_batch_ocr
 from photopipe.geocoding import geocode_location
 from photopipe.file_manager import finalize_batch
 from photopipe.ai_dating import estimate_batch_date_with_ai, apply_ai_date_to_batch
@@ -120,7 +119,14 @@ def cmd_batch_create(args):
 
 
 def cmd_batch_process(args):
-    """Process a batch (ingest + OCR)."""
+    """Preview or ingest a batch.
+
+    The legacy Tesseract OCR step has been removed. Photo capture +
+    handwriting OCR now live in the GUI capture/curate flow
+    (`streamlit run app.py`), which uses the multi-image VLM pipeline.
+    This CLI command still supports `--preview` and basic ingestion so
+    headless workflows can verify pair counts.
+    """
     db = Database()
 
     batch = db.get_batch_by_name(args.name)
@@ -140,7 +146,7 @@ def cmd_batch_process(args):
         print(f"  Orphaned backs: {summary['orphaned_backs']}")
         return
 
-    # Step 1: Ingest
+    # Step 1: Ingest pairs into DB (no OCR — that now happens in capture pipeline)
     print(f"\n📥 Ingesting photos from {input_folder}...")
     new_photos = pair_scans(input_folder, batch, db)
     print(f"   Ingested {len(new_photos)} new photo pairs")
@@ -149,39 +155,26 @@ def cmd_batch_process(args):
         print("   No new photos to process")
         return
 
-    # Step 2: OCR
-    print("\n🔤 Running OCR...")
+    print(
+        "\nℹ️  OCR + AI dating moved to the GUI capture/curate flow.\n"
+        "   Run `streamlit run app.py` to capture and date these photos."
+    )
 
-    def progress(current, total):
-        print(f"   Processing {current}/{total}...", end="\r")
-
-    processed = process_batch_ocr(batch.id, db, progress_callback=progress)
-    print(f"\n   Processed {len(processed)} photos")
-
-    # Count results
-    dates_found = len([p for p in processed if p.extracted_date])
-    needs_review = len([p for p in processed if p.needs_review])
-    print(f"   Dates found: {dates_found}")
-    print(f"   Needs review: {needs_review}")
-
-    # Step 3: AI dating (if enabled and needed)
+    # Step 2: AI dating (if explicitly requested — still useful headlessly)
     if args.ai_dating:
-        photos_without_dates = [p for p in processed if p.extracted_date is None]
-        if photos_without_dates:
-            print("\n🤖 Running AI date estimation...")
-            estimate = estimate_batch_date_with_ai(batch, photos_without_dates, db)
-            if estimate:
-                print(f"   Estimated year: {estimate.year}")
-                print(f"   Confidence: {estimate.confidence.value}")
-                updated = apply_ai_date_to_batch(batch, estimate, photos_without_dates, db)
-                print(f"   Applied to {updated} photos")
+        print("\n🤖 Running AI date estimation...")
+        estimate = estimate_batch_date_with_ai(batch, new_photos, db)
+        if estimate:
+            print(f"   Estimated year: {estimate.year}")
+            print(f"   Confidence: {estimate.confidence.value}")
+            updated = apply_ai_date_to_batch(batch, estimate, new_photos, db)
+            print(f"   Applied to {updated} photos")
 
-    # Update batch status
-    batch.status = BatchStatus.REVIEW if needs_review > 0 else BatchStatus.PROCESSING
+    batch.status = BatchStatus.PROCESSING
     db.update_batch(batch)
 
-    print(f"\n✅ Processing complete!")
-    print(f"   Next: Review photos and run 'photopipe batch finalize --name {args.name}'")
+    print(f"\n✅ Ingest complete!")
+    print(f"   Next: Open `streamlit run app.py` to curate, then finalize.")
 
 
 def cmd_batch_finalize(args):

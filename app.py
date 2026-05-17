@@ -157,8 +157,8 @@ def main():
             if st.button("⚙️ Settings", use_container_width=True):
                 st.switch_page("pages/0_setup.py")
         with col2:
-            if st.button("❓ Help", use_container_width=True):
-                st.switch_page("pages/help.py")
+            if st.button("⚙️ Config", use_container_width=True):
+                st.switch_page("pages/settings.py")
 
         st.markdown("---")
         # Helper Mode: hides owner-only pages and redirects to the bare
@@ -191,16 +191,16 @@ def main():
             st.switch_page("pages/1_batch_setup.py")
 
     with col2:
-        st.markdown("### 📥 Scan Ingest")
-        st.write("Import scans from your scanner")
-        if st.button("Go to Scan Ingest", key="goto_ingest"):
-            st.switch_page("pages/2_scan_ingest.py")
+        st.markdown("### 📥 Capture")
+        st.write("Scan photos into a bucket")
+        if st.button("Go to Capture", key="goto_capture"):
+            st.switch_page("pages/2_capture.py")
 
     with col3:
-        st.markdown("### 👁️ Review Queue")
-        st.write("Review and approve metadata")
-        if st.button("Go to Review", key="goto_review"):
-            st.switch_page("pages/3_review.py")
+        st.markdown("### 👁️ Curate")
+        st.write("Review buckets and run AI dating")
+        if st.button("Go to Curate", key="goto_curate"):
+            st.switch_page("pages/3_curate.py")
 
     with col4:
         st.markdown("### ✅ Finalize")
