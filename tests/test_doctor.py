@@ -1,5 +1,7 @@
 """Tests for the photopipe doctor CLI."""
+import json
 import subprocess
+import urllib.error
 from unittest.mock import patch, MagicMock
 
 from photopipe.cli.doctor import (
@@ -8,8 +10,17 @@ from photopipe.cli.doctor import (
     check_scanner_discovery,
     check_anthropic_key,
     check_mistral_key,
+    check_model_alias,
     run_doctor,
 )
+
+
+def _fake_models_response(model_ids):
+    """Build a MagicMock context manager mimicking urlopen() for /v1/models."""
+    payload = json.dumps({"data": [{"id": m} for m in model_ids]}).encode()
+    cm = MagicMock()
+    cm.__enter__.return_value.read.return_value = payload
+    return cm
 
 
 def test_check_exiftool_present():
@@ -117,12 +128,60 @@ def test_check_mistral_key_present(monkeypatch):
         cfg.handwriting_ocr.provider = original
 
 
+def test_check_model_alias_skips_without_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    c = check_model_alias()
+    assert c.ok
+    assert "not verified" in c.detail
+
+
+def test_check_model_alias_valid_model(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    from photopipe.config import get_config
+    model = get_config().vlm.model
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_fake_models_response([model, "claude-opus-4-7"]),
+    ):
+        c = check_model_alias()
+    assert c.ok
+    assert "valid" in c.detail
+
+
+def test_check_model_alias_invalid_model(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_fake_models_response(["claude-opus-4-7", "claude-sonnet-4-5"]),
+    ):
+        c = check_model_alias()
+    assert not c.ok
+    assert "NOT in /v1/models" in c.detail
+    assert "claude-sonnet-4-5" in c.fix
+
+
+def test_check_model_alias_tolerates_network_error(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ):
+        c = check_model_alias()
+    # Network failure must not fail the check — it's advisory only.
+    assert c.ok
+    assert "could not verify" in c.detail
+
+
 def test_run_doctor_returns_zero_on_all_pass(monkeypatch, capsys):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
     monkeypatch.setenv("MISTRAL_API_KEY", "ms-x")
+    from photopipe.config import get_config
+    model = get_config().vlm.model
     with patch(
         "photopipe.cli.doctor.shutil.which", side_effect=lambda c: f"/usr/bin/{c}"
-    ), patch("photopipe.cli.doctor.subprocess.run") as run:
+    ), patch("photopipe.cli.doctor.subprocess.run") as run, patch(
+        "urllib.request.urlopen", return_value=_fake_models_response([model])
+    ):
         run.return_value = MagicMock(stdout="device 'x' is a scanner", stderr="")
         rc = run_doctor()
     assert rc == 0

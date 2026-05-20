@@ -122,6 +122,21 @@ def _thumbnail_grid(photos) -> None:
                 st.caption(f"#{photo.sequence_num}")
 
 
+def _owner_exit_footer() -> None:
+    """Discreet way back to owner mode.
+
+    Helper Mode hides the sidebar entirely, so without this the owner
+    would have to restart the app or hand-edit the URL to get back.
+    Kept in a collapsed expander so a helper is unlikely to wander in.
+    """
+    st.markdown("---")
+    with st.expander("⚙️ Owner"):
+        st.caption("Leave Helper Mode and return to the full owner view.")
+        if st.button("Exit Helper Mode"):
+            st.session_state.helper_mode = False
+            st.switch_page("app.py")
+
+
 def main() -> None:
     init_state()
     db = st.session_state.db
@@ -131,6 +146,7 @@ def main() -> None:
 
     if st.session_state.current_bucket_id is None:
         _bucket_selection_screen(svc)
+        _owner_exit_footer()
         return
 
     bucket = db.get_bucket(st.session_state.current_bucket_id)
@@ -161,6 +177,8 @@ def main() -> None:
             svc.close_bucket(bucket.id)
             st.session_state.current_bucket_id = None
             st.rerun()
+
+    _owner_exit_footer()
 
 
 if __name__ == "__main__":

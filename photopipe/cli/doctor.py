@@ -83,9 +83,51 @@ def check_mistral_key() -> Check:
     )
 
 
+def check_model_alias() -> Check:
+    """Verify the configured Claude model exists in Anthropic's model list.
+
+    Catches a stale/typo'd `vlm.model` config before the first real
+    curate run fails with an opaque 404. Skips gracefully when no key
+    is set (check_anthropic_key already reports that).
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    cfg = get_config()
+    model = cfg.vlm.model
+    key = os.environ.get(cfg.vlm.api_key_env_var)
+    if not key:
+        return Check(
+            "Claude model alias", True,
+            detail=f"{model} (not verified — no API key)",
+        )
+    try:
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/models?limit=100",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.load(resp)
+        available = {m["id"] for m in data.get("data", [])}
+    except (urllib.error.URLError, ValueError, KeyError, TimeoutError) as e:
+        return Check(
+            "Claude model alias", True,
+            detail=f"{model} (could not verify: {e})",
+        )
+    return Check(
+        "Claude model alias", model in available,
+        detail=f"{model}: {'valid' if model in available else 'NOT in /v1/models'}",
+        fix=(
+            f"Set vlm.model in config to a valid alias. Available: "
+            f"{', '.join(sorted(m for m in available if 'sonnet' in m or 'opus' in m))}"
+        ) if model not in available else None,
+    )
+
+
 CHECKS = [
     check_exiftool, check_sane, check_scanner_discovery,
-    check_anthropic_key, check_mistral_key,
+    check_anthropic_key, check_mistral_key, check_model_alias,
 ]
 
 

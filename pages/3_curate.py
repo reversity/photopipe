@@ -48,9 +48,10 @@ def main():
             st.metric("Already dated", sum(1 for p in photos if p.extracted_date))
         with col2:
             images_per_call = st.slider("Photos per AI call", 5, 20, 12)
-            # TODO: Batch API mode is a follow-up; falls back to realtime for MVP.
-            # The radio is informational only — `mode` is not consumed below.
-            mode = st.radio("Mode", ["Realtime (sync)", "Batch API (async, 50% off)"])
+            st.caption(
+                "Runs in realtime (synchronous). Batch API mode "
+                "(async, 50% cheaper) is a planned follow-up."
+            )
 
         if st.button("🤖 Run AI Dating", type="primary"):
             undated = [p for p in photos if not p.extracted_date]
