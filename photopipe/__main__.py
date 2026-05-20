@@ -284,13 +284,10 @@ def cmd_status(args):
     print("\n🔧 Dependencies:")
 
     from photopipe.metadata import check_exiftool_installed
-    import shutil
 
     exiftool = "✅" if check_exiftool_installed() else "❌"
-    tesseract = "✅" if shutil.which("tesseract") else "❌"
 
     print(f"   ExifTool:  {exiftool}")
-    print(f"   Tesseract: {tesseract}")
 
     # AI
     import os

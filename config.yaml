@@ -20,21 +20,23 @@ scanner:
   duplex: true  # Scan front and back
   source: ADF  # ADF (auto document feeder) or Flatbed
 
-ocr:
-  # Tesseract settings
-  language: eng
-  confidence_threshold: 70  # Flag for review below this
-  preprocessing:
-    grayscale: true
-    adaptive_threshold: true
-    deskew: true
+handwriting_ocr:
+  # Reads handwriting/stamps off photo backs
+  provider: auto  # auto | mistral | claude
+  mistral_api_key_env_var: MISTRAL_API_KEY
+  mistral_model: mistral-ocr-3
+  mistral_max_image_dim: 2048
+  confidence_fallback_threshold: 0.6  # below this, fall back to Claude vision
+  use_batch_api: true
 
-ai_dating:
-  enabled: true
+vlm:
+  # Claude vision for AI dating in the curate phase
+  provider: anthropic
+  model: claude-sonnet-4-6
   api_key_env_var: ANTHROPIC_API_KEY  # Read from environment
-  model: claude-sonnet-4-20250514
-  max_samples_per_batch: 3
-  max_image_dimension: 1024  # Resize to save tokens
+  max_image_dimension: 1568
+  cache_ttl: 5m  # 5m | 1h — prompt-cache lifetime
+  batch_api_threshold: 50  # use Batch API at/above this photo count
 
 metadata:
   # Default values when not specified
