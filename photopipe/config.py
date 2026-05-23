@@ -122,7 +122,16 @@ class Config(BaseModel):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(path, "w") as f:
-            yaml.dump(self.model_dump(), f, default_flow_style=False, sort_keys=False)
+            # mode="json" serializes Path (and other Pydantic-native types) as
+            # plain strings, so yaml.safe_load can read the file back. Plain
+            # model_dump() emits !!python/object/apply tags for Path values
+            # which safe_load refuses, silently breaking the Save button.
+            yaml.dump(
+                self.model_dump(mode="json"),
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+            )
 
     def ensure_directories(self) -> None:
         """Create all required directories if they don't exist."""
