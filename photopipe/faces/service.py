@@ -175,6 +175,44 @@ class FaceService:
         cluster.label = label.strip() or None
         self.db.update_face_cluster(cluster)
 
+    def merge_clusters(self, cluster_ids: list[str]) -> None:
+        """Merge all given clusters into the first one; delete the rest.
+
+        Every face in the merged-away clusters is reassigned to the kept
+        cluster. No-op if fewer than two ids are given.
+        """
+        if len(cluster_ids) < 2:
+            return
+        keep_id, *merge_ids = cluster_ids
+        merge_set = set(merge_ids)
+        for face in self.db.get_faces_by_batch(
+            self._batch_id_for_cluster(keep_id)
+        ):
+            if face.cluster_id in merge_set:
+                face.cluster_id = keep_id
+                self.db.update_face(face)
+        for cid in merge_ids:
+            cluster = self.db.get_face_cluster(cid)
+            if cluster:
+                self.db.delete_face_cluster(cid)
+
+    def move_face(self, face_id: str, target_cluster_id: str) -> None:
+        """Reassign a single face to a different cluster."""
+        target = self.db.get_face_cluster(target_cluster_id)
+        if target is None:
+            raise ValueError(f"face cluster {target_cluster_id} not found")
+        face = self.db.get_face(face_id)
+        if face is None:
+            raise ValueError(f"face {face_id} not found")
+        face.cluster_id = target_cluster_id
+        self.db.update_face(face)
+
+    def _batch_id_for_cluster(self, cluster_id: str) -> str:
+        cluster = self.db.get_face_cluster(cluster_id)
+        if cluster is None:
+            raise ValueError(f"face cluster {cluster_id} not found")
+        return cluster.batch_id
+
     def propagate_labels(self, batch: Batch) -> PropagateResult:
         """Add each named, non-noise cluster's label to its photos' keywords.
 

@@ -690,6 +690,13 @@ class Database:
             ).fetchall()
         return [self._row_to_face(r) for r in rows]
 
+    def get_face(self, face_id: str) -> Optional[Face]:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM faces WHERE id = ?", (face_id,)
+            ).fetchone()
+        return self._row_to_face(row) if row else None
+
     def update_face(self, face: Face) -> None:
         with self.connection() as conn:
             conn.execute(
@@ -756,6 +763,10 @@ class Database:
     def delete_face_clusters_by_batch(self, batch_id: str) -> None:
         with self.connection() as conn:
             conn.execute("DELETE FROM face_clusters WHERE batch_id = ?", (batch_id,))
+
+    def delete_face_cluster(self, cluster_id: str) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
 
     def _row_to_face_cluster(self, row) -> FaceCluster:
         return FaceCluster(

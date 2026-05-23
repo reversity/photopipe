@@ -120,3 +120,48 @@ def test_detect_batch_clears_prior_state(db, tmp_path):
     svc.detect_batch(batch)  # re-run
     # Re-running must not double the face rows.
     assert len(db.get_faces_by_batch(batch.id)) == 1
+
+
+def test_merge_clusters_reassigns_faces(db, tmp_path):
+    batch, photos = _batch_with_photos(db, tmp_path, 1)
+    backend = MagicMock()
+    backend.detect.return_value = [
+        DetectedFace(bbox=(0, 0, 9, 9), embedding=_emb(1), detection_score=0.9)
+    ]
+    svc = FaceService(db, backend=backend, crop_root=tmp_path / "crops")
+    svc.detect_batch(batch)
+    svc.cluster_batch(batch)
+
+    # Manufacture a second real cluster to merge into the first.
+    from photopipe.models import FaceCluster
+    extra = FaceCluster(batch_id=batch.id)
+    db.create_face_cluster(extra)
+    faces = db.get_faces_by_batch(batch.id)
+    keep_id = faces[0].cluster_id
+
+    svc.merge_clusters([keep_id, extra.id])
+    # The merged-away cluster is gone.
+    remaining = {c.id for c in db.get_face_clusters_by_batch(batch.id)}
+    assert extra.id not in remaining
+    # All faces still point at the kept cluster.
+    assert all(f.cluster_id == keep_id for f in db.get_faces_by_batch(batch.id))
+
+
+def test_move_face_changes_cluster(db, tmp_path):
+    batch, photos = _batch_with_photos(db, tmp_path, 1)
+    backend = MagicMock()
+    backend.detect.return_value = [
+        DetectedFace(bbox=(0, 0, 9, 9), embedding=_emb(1), detection_score=0.9)
+    ]
+    svc = FaceService(db, backend=backend, crop_root=tmp_path / "crops")
+    svc.detect_batch(batch)
+    svc.cluster_batch(batch)
+
+    from photopipe.models import FaceCluster
+    target = FaceCluster(batch_id=batch.id)
+    db.create_face_cluster(target)
+    face = db.get_faces_by_batch(batch.id)[0]
+
+    svc.move_face(face.id, target.id)
+    moved = db.get_faces_by_batch(batch.id)[0]
+    assert moved.cluster_id == target.id
