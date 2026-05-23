@@ -12,6 +12,8 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Generator
 
+import numpy as np
+
 from photopipe.config import get_config
 from photopipe.migrations import run_all_migrations
 from photopipe.models import (
@@ -20,6 +22,8 @@ from photopipe.models import (
     BatchTemplate,
     Bucket,
     BucketStatus,
+    Face,
+    FaceCluster,
     PhotoPair,
     PhotoPhase,
     PhotoStatus,
@@ -656,6 +660,109 @@ class Database:
             if row["created_at"]
             else datetime.now(),
             closed_at=datetime.fromisoformat(row["closed_at"]) if row["closed_at"] else None,
+        )
+
+    # ==================== Face Operations ====================
+
+    def create_face(self, face: Face) -> Face:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO faces(id, photo_id, batch_id, bbox, embedding,
+                                  crop_path, cluster_id, detection_score, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    face.id, face.photo_id, face.batch_id,
+                    json.dumps(list(face.bbox)),
+                    np.asarray(face.embedding, dtype=np.float32).tobytes(),
+                    str(face.crop_path) if face.crop_path else None,
+                    face.cluster_id, face.detection_score,
+                    face.created_at.isoformat(),
+                ),
+            )
+        return face
+
+    def get_faces_by_batch(self, batch_id: str) -> list[Face]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM faces WHERE batch_id = ? ORDER BY created_at", (batch_id,)
+            ).fetchall()
+        return [self._row_to_face(r) for r in rows]
+
+    def update_face(self, face: Face) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE faces SET cluster_id = ?, crop_path = ? WHERE id = ?",
+                (face.cluster_id, str(face.crop_path) if face.crop_path else None, face.id),
+            )
+
+    def delete_faces_by_batch(self, batch_id: str) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM faces WHERE batch_id = ?", (batch_id,))
+
+    def _row_to_face(self, row) -> Face:
+        return Face(
+            id=row["id"], photo_id=row["photo_id"], batch_id=row["batch_id"],
+            bbox=tuple(json.loads(row["bbox"])),
+            embedding=np.frombuffer(row["embedding"], dtype=np.float32).tolist(),
+            crop_path=Path(row["crop_path"]) if row["crop_path"] else None,
+            cluster_id=row["cluster_id"], detection_score=row["detection_score"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    # ==================== Face Cluster Operations ====================
+
+    def create_face_cluster(self, cluster: FaceCluster) -> FaceCluster:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO face_clusters(id, batch_id, label,
+                                          representative_face_id, is_noise, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cluster.id, cluster.batch_id, cluster.label,
+                    cluster.representative_face_id, int(cluster.is_noise),
+                    cluster.created_at.isoformat(),
+                ),
+            )
+        return cluster
+
+    def get_face_clusters_by_batch(self, batch_id: str) -> list[FaceCluster]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM face_clusters WHERE batch_id = ? ORDER BY created_at",
+                (batch_id,),
+            ).fetchall()
+        return [self._row_to_face_cluster(r) for r in rows]
+
+    def get_face_cluster(self, cluster_id: str) -> Optional[FaceCluster]:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM face_clusters WHERE id = ?", (cluster_id,)
+            ).fetchone()
+        return self._row_to_face_cluster(row) if row else None
+
+    def update_face_cluster(self, cluster: FaceCluster) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """UPDATE face_clusters SET label = ?, representative_face_id = ?,
+                   is_noise = ? WHERE id = ?""",
+                (cluster.label, cluster.representative_face_id,
+                 int(cluster.is_noise), cluster.id),
+            )
+
+    def delete_face_clusters_by_batch(self, batch_id: str) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM face_clusters WHERE batch_id = ?", (batch_id,))
+
+    def _row_to_face_cluster(self, row) -> FaceCluster:
+        return FaceCluster(
+            id=row["id"], batch_id=row["batch_id"], label=row["label"],
+            representative_face_id=row["representative_face_id"],
+            is_noise=bool(row["is_noise"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
         )
 
     # ==================== Template Operations ====================
