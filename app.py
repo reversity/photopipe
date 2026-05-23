@@ -141,8 +141,8 @@ def main():
         from photopipe.metadata import check_exiftool_installed
         exiftool_ok = check_exiftool_installed()
 
-        from photopipe.ai_dating import is_ai_dating_available
-        ai_ok = is_ai_dating_available()
+        from photopipe.vlm_client import is_vlm_available
+        ai_ok = is_vlm_available()
 
         st.write("ExifTool:", "✅" if exiftool_ok else "❌")
         st.write("AI Dating:", "✅" if ai_ok else "⚠️ No API key")

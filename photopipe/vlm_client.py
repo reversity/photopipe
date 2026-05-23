@@ -18,6 +18,19 @@ from PIL import Image
 from photopipe.config import get_config
 
 
+def is_vlm_available() -> bool:
+    """True iff a Claude API key is configured and the SDK is importable."""
+    import os
+    cfg = get_config()
+    if not os.environ.get(cfg.vlm.api_key_env_var):
+        return False
+    try:
+        import anthropic  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def resize_image_to_jpeg_bytes(image_path: Path, max_dim: int = 1568, quality: int = 85) -> bytes:
     """Resize image to fit max_dim and return JPEG-encoded bytes."""
     from PIL import Image

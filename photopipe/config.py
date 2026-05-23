@@ -50,28 +50,6 @@ class ScannerConfig(BaseModel):
     source: str = "ADF"  # ADF (auto document feeder) or Flatbed
 
 
-class OCRConfig(BaseModel):
-    """Tesseract OCR configuration."""
-    language: str = "eng"
-    confidence_threshold: int = 70
-
-    class PreprocessingConfig(BaseModel):
-        grayscale: bool = True
-        adaptive_threshold: bool = True
-        deskew: bool = True
-
-    preprocessing: PreprocessingConfig = Field(default_factory=PreprocessingConfig)
-
-
-class AIDatingConfig(BaseModel):
-    """Claude AI dating configuration."""
-    enabled: bool = True
-    api_key_env_var: str = "ANTHROPIC_API_KEY"
-    model: str = "claude-sonnet-4-20250514"
-    max_samples_per_batch: int = 3
-    max_image_dimension: int = 1024
-
-
 class VLMConfig(BaseModel):
     """Vision-language model transport configuration."""
     provider: Literal["anthropic"] = "anthropic"
@@ -122,8 +100,6 @@ class Config(BaseModel):
     """Main configuration container."""
     paths: PathsConfig = Field(default_factory=PathsConfig)
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
-    ocr: OCRConfig = Field(default_factory=OCRConfig)
-    ai_dating: AIDatingConfig = Field(default_factory=AIDatingConfig)
     vlm: VLMConfig = Field(default_factory=VLMConfig)
     handwriting_ocr: HandwritingOCRConfig = Field(default_factory=HandwritingOCRConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
@@ -158,7 +134,7 @@ class Config(BaseModel):
     def get_api_key(self) -> Optional[str]:
         """Get the Anthropic API key from environment or settings."""
         # Try environment first
-        key = os.environ.get(self.ai_dating.api_key_env_var)
+        key = os.environ.get(self.vlm.api_key_env_var)
         if key:
             return key
 

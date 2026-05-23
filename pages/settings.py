@@ -9,7 +9,7 @@ from pathlib import Path
 from photopipe.config import get_config, save_config, reload_config, Config
 from photopipe.database import Database
 from photopipe.metadata import check_exiftool_installed
-from photopipe.ai_dating import is_ai_dating_available
+from photopipe.vlm_client import is_vlm_available
 
 
 st.set_page_config(page_title="Settings - PhotoPipe", page_icon="⚙️", layout="wide")
@@ -27,7 +27,7 @@ def system_status():
     """Display system status and dependencies."""
     st.subheader("🔧 System Status")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
 
     with col1:
         st.write("**ExifTool**")
@@ -38,20 +38,12 @@ def system_status():
             st.code("brew install exiftool")
 
     with col2:
-        st.write("**Tesseract OCR**")
-        import shutil
-        if shutil.which("tesseract"):
-            st.success("✅ Installed")
-        else:
-            st.error("❌ Not installed")
-            st.code("brew install tesseract")
-
-    with col3:
-        st.write("**AI Dating**")
-        if is_ai_dating_available():
+        st.write("**Claude VLM**")
+        if is_vlm_available():
             st.success("✅ Available")
         else:
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            config = get_config()
+            api_key = os.environ.get(config.vlm.api_key_env_var)
             if not api_key:
                 st.warning("⚠️ No API key")
             else:
@@ -139,117 +131,134 @@ def scanner_settings():
             st.success("✅ Scanner settings saved!")
 
 
-def ocr_settings():
-    """Configure OCR settings."""
-    st.subheader("🔤 OCR Settings")
+def handwriting_ocr_settings():
+    """Configure handwriting OCR (photo backs) settings."""
+    st.subheader("🔤 Handwriting OCR Settings")
 
     config = get_config()
 
-    with st.form("ocr_settings"):
-        language = st.text_input(
-            "Tesseract Language",
-            value=config.ocr.language,
-            help="Tesseract language code (eng, deu, fra, etc.)",
+    with st.form("handwriting_ocr_settings"):
+        provider_options = ["auto", "mistral", "claude"]
+        current_provider = config.handwriting_ocr.provider
+        try:
+            provider_index = provider_options.index(current_provider)
+        except ValueError:
+            provider_index = 0
+
+        provider = st.selectbox(
+            "Provider",
+            options=provider_options,
+            index=provider_index,
+            help="'auto' uses Mistral first and falls back to Claude on low confidence.",
         )
 
-        confidence_threshold = st.slider(
-            "Confidence Threshold",
-            min_value=0,
-            max_value=100,
-            value=config.ocr.confidence_threshold,
-            help="Flag for review below this confidence level",
+        mistral_model = st.text_input(
+            "Mistral Model",
+            value=config.handwriting_ocr.mistral_model,
+            help="Mistral OCR model identifier (e.g., mistral-ocr-3).",
         )
 
-        st.write("**Preprocessing**")
-        col1, col2, col3 = st.columns(3)
+        mistral_max_image_dim = st.slider(
+            "Mistral Max Image Dimension",
+            min_value=1024,
+            max_value=4096,
+            value=config.handwriting_ocr.mistral_max_image_dim,
+            step=256,
+            help="Images resized to this dimension before submission to Mistral.",
+        )
 
-        with col1:
-            grayscale = st.checkbox(
-                "Grayscale",
-                value=config.ocr.preprocessing.grayscale,
-            )
+        confidence_fallback_threshold = st.slider(
+            "Confidence Fallback Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(config.handwriting_ocr.confidence_fallback_threshold),
+            step=0.05,
+            help="Below this Mistral confidence, fall back to the Claude VLM.",
+        )
 
-        with col2:
-            threshold = st.checkbox(
-                "Adaptive Threshold",
-                value=config.ocr.preprocessing.adaptive_threshold,
-            )
+        use_batch_api = st.checkbox(
+            "Use Batch API",
+            value=config.handwriting_ocr.use_batch_api,
+            help="Submit OCR work via the Batch API where supported.",
+        )
 
-        with col3:
-            deskew = st.checkbox(
-                "Deskew",
-                value=config.ocr.preprocessing.deskew,
-            )
-
-        if st.form_submit_button("Save OCR Settings"):
-            config.ocr.language = language
-            config.ocr.confidence_threshold = confidence_threshold
-            config.ocr.preprocessing.grayscale = grayscale
-            config.ocr.preprocessing.adaptive_threshold = threshold
-            config.ocr.preprocessing.deskew = deskew
+        if st.form_submit_button("Save Handwriting OCR Settings"):
+            config.handwriting_ocr.provider = provider
+            config.handwriting_ocr.mistral_model = mistral_model
+            config.handwriting_ocr.mistral_max_image_dim = mistral_max_image_dim
+            config.handwriting_ocr.confidence_fallback_threshold = confidence_fallback_threshold
+            config.handwriting_ocr.use_batch_api = use_batch_api
 
             save_config(config)
-            st.success("✅ OCR settings saved!")
+            st.success("✅ Handwriting OCR settings saved!")
 
 
-def ai_settings():
-    """Configure AI dating settings."""
-    st.subheader("🤖 AI Dating Settings")
+def vlm_settings():
+    """Configure Claude vision-language model settings."""
+    st.subheader("🤖 Claude VLM Settings")
 
     config = get_config()
 
     # API key status
-    api_key = os.environ.get(config.ai_dating.api_key_env_var)
+    api_key = os.environ.get(config.vlm.api_key_env_var)
     if api_key:
-        st.success(f"✅ API key found in environment ({config.ai_dating.api_key_env_var})")
+        st.success(f"✅ API key found in environment ({config.vlm.api_key_env_var})")
         st.caption(f"Key: {api_key[:8]}...{api_key[-4:]}")
     else:
-        st.warning(f"⚠️ No API key found in {config.ai_dating.api_key_env_var}")
+        st.warning(f"⚠️ No API key found in {config.vlm.api_key_env_var}")
         st.info("""
-        To enable AI dating, set your Anthropic API key:
+        To enable the Claude VLM, set your Anthropic API key:
         ```bash
         export ANTHROPIC_API_KEY='your-key-here'
         ```
         Then restart PhotoPipe.
         """)
 
-    with st.form("ai_settings"):
-        enabled = st.checkbox(
-            "Enable AI Dating",
-            value=config.ai_dating.enabled,
-        )
-
-        model = st.selectbox(
+    with st.form("vlm_settings"):
+        model = st.text_input(
             "Model",
-            options=["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514"],
-            index=0 if config.ai_dating.model == "claude-sonnet-4-20250514" else 1,
+            value=config.vlm.model,
+            help="Claude model alias used for vision calls.",
         )
+        st.caption("Run `python -m photopipe doctor` to verify the model alias is valid.")
 
-        max_samples = st.slider(
-            "Max Samples per Batch",
-            min_value=1,
-            max_value=10,
-            value=config.ai_dating.max_samples_per_batch,
-            help="Number of representative photos to analyze",
-        )
-
-        max_dimension = st.slider(
+        max_image_dimension = st.slider(
             "Max Image Dimension",
             min_value=512,
             max_value=2048,
-            value=config.ai_dating.max_image_dimension,
+            value=config.vlm.max_image_dimension,
             step=256,
-            help="Images resized to this dimension to save API costs",
+            help="Images resized to this dimension to manage vision token cost.",
         )
 
-        if st.form_submit_button("Save AI Settings"):
-            config.ai_dating.enabled = enabled
-            config.ai_dating.model = model
-            config.ai_dating.max_samples_per_batch = max_samples
-            config.ai_dating.max_image_dimension = max_dimension
+        cache_ttl_options = ["5m", "1h"]
+        current_ttl = config.vlm.cache_ttl
+        try:
+            cache_ttl_index = cache_ttl_options.index(current_ttl)
+        except ValueError:
+            cache_ttl_index = 0
+        cache_ttl = st.selectbox(
+            "Prompt Cache TTL",
+            options=cache_ttl_options,
+            index=cache_ttl_index,
+            help="How long the cached prompt prefix should live.",
+        )
+
+        batch_api_threshold = st.number_input(
+            "Batch API Threshold",
+            min_value=1,
+            value=config.vlm.batch_api_threshold,
+            help="Use the Batch API when a job has at least this many photos.",
+        )
+
+        if st.form_submit_button("Save Claude VLM Settings"):
+            config.vlm.model = model
+            config.vlm.max_image_dimension = max_image_dimension
+            config.vlm.cache_ttl = cache_ttl
+            config.vlm.batch_api_threshold = int(batch_api_threshold)
 
             save_config(config)
-            st.success("✅ AI settings saved!")
+            st.success("✅ Claude VLM settings saved!")
 
 
 def output_settings():
@@ -424,8 +433,8 @@ def main():
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📁 Paths",
         "📷 Scanner",
-        "🔤 OCR",
-        "🤖 AI",
+        "🔤 Handwriting OCR",
+        "🤖 Claude VLM",
         "📤 Output",
         "🗄️ Database",
     ])
@@ -437,10 +446,10 @@ def main():
         scanner_settings()
 
     with tab3:
-        ocr_settings()
+        handwriting_ocr_settings()
 
     with tab4:
-        ai_settings()
+        vlm_settings()
 
     with tab5:
         col1, col2 = st.columns(2)
