@@ -155,10 +155,12 @@ class Config(BaseModel):
             return None
 
 
-# Default config file locations
+# Default config file locations. User dotfile wins over the repo template
+# so that customisations in ~/.photopipe/config.yaml are actually respected.
+# (The repo's ./config.yaml is a documented example, not the source of truth.)
 DEFAULT_CONFIG_PATHS = [
-    Path.cwd() / "config.yaml",
     Path.home() / ".photopipe" / "config.yaml",
+    Path.cwd() / "config.yaml",
 ]
 
 
@@ -170,17 +172,41 @@ def find_config_file() -> Optional[Path]:
     return None
 
 
+def _load_with_legacy_migration(path: Path) -> Config:
+    """Load a Config YAML, migrating legacy Python-tagged files in place.
+
+    Old versions of ``Config.to_yaml`` emitted ``!!python/object/apply``
+    tags for Path fields. ``yaml.safe_load`` (and ``FullLoader``) refuse
+    those, so we fall back to ``yaml.UnsafeLoader`` — the trust boundary
+    is the user's own home directory, where the file was written by an
+    older version of this same code; we're not loading external input.
+    After loading, we immediately rewrite the file through the current
+    safe ``to_yaml`` so the next launch loads via ``safe_load`` cleanly.
+    One-time, idempotent on a clean file (clean files take the
+    safe_load path and are never rewritten).
+    """
+    try:
+        return Config.from_yaml(path)
+    except yaml.constructor.ConstructorError:
+        with open(path) as f:
+            data = yaml.load(f, Loader=yaml.UnsafeLoader) or {}
+        cfg = Config(**data)
+        cfg.to_yaml(path)
+        return cfg
+
+
 @lru_cache(maxsize=1)
 def get_config() -> Config:
     """
     Get the global configuration instance.
 
     Loads from the first found config file, or returns defaults.
-    Result is cached for performance.
+    Result is cached for performance. Legacy Python-tagged YAML files
+    are migrated to clean format on first load.
     """
     config_path = find_config_file()
     if config_path:
-        return Config.from_yaml(config_path)
+        return _load_with_legacy_migration(config_path)
     return Config()
 
 
