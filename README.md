@@ -107,6 +107,22 @@ hand off the running app. The helper:
    assessment, and flags likely segment breaks.
 3. **Finalize page**: write EXIF/IPTC metadata, copy to archive.
 
+### Faces (optional)
+
+The **Faces** page groups people across a batch so you name each person
+once instead of tagging every photo:
+
+1. Pick a batch, click **Detect faces** — finds every face (the face
+   model downloads automatically the first time, ~300 MB).
+2. **Group faces** — clusters the faces by person.
+3. Name each group; use **merge** if one person split into two groups.
+4. **Apply names** — adds each name to the keywords of the photos that
+   person appears in.
+
+All face data — crops and embeddings — stays on your machine. Nothing
+is sent to any API. (Cloud vision models refuse to identify people, so
+this is local by necessity as well as by design.)
+
 ## Output Structure
 
 ```

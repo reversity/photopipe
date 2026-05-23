@@ -11,6 +11,7 @@ from photopipe.cli.doctor import (
     check_anthropic_key,
     check_mistral_key,
     check_model_alias,
+    check_face_model,
     run_doctor,
 )
 
@@ -172,9 +173,13 @@ def test_check_model_alias_tolerates_network_error(monkeypatch):
     assert "could not verify" in c.detail
 
 
-def test_run_doctor_returns_zero_on_all_pass(monkeypatch, capsys):
+def test_run_doctor_returns_zero_on_all_pass(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
     monkeypatch.setenv("MISTRAL_API_KEY", "ms-x")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    model_dir = tmp_path / ".insightface" / "models" / "buffalo_l"
+    model_dir.mkdir(parents=True)
+    (model_dir / "det_10g.onnx").write_bytes(b"x")
     from photopipe.config import get_config
     model = get_config().vlm.model
     with patch(
@@ -193,3 +198,19 @@ def test_run_doctor_returns_nonzero_on_failure(monkeypatch):
     with patch("photopipe.cli.doctor.shutil.which", return_value=None):
         rc = run_doctor()
     assert rc != 0
+
+
+def test_check_face_model_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    model_dir = tmp_path / ".insightface" / "models" / "buffalo_l"
+    model_dir.mkdir(parents=True)
+    (model_dir / "det_10g.onnx").write_bytes(b"x")
+    c = check_face_model()
+    assert c.ok
+
+
+def test_check_face_model_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    c = check_face_model()
+    assert not c.ok
+    assert "downloaded" in c.detail.lower() or "first" in (c.fix or "").lower()

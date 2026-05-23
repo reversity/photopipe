@@ -125,9 +125,31 @@ def check_model_alias() -> Check:
     )
 
 
+def check_face_model() -> Check:
+    """Report whether the InsightFace buffalo_l model pack is downloaded.
+
+    The pack (~300 MB) downloads automatically on the first face
+    detection. This check just tells the owner whether that has
+    happened yet — a missing pack is not an error.
+    """
+    from pathlib import Path
+
+    model_dir = Path.home() / ".insightface" / "models" / "buffalo_l"
+    present = model_dir.exists() and any(model_dir.glob("*.onnx"))
+    return Check(
+        "Face model (InsightFace buffalo_l)", present,
+        detail="downloaded" if present else "not downloaded yet",
+        fix=(
+            "Downloads automatically (~300 MB) the first time you run "
+            "Detect on the Faces page."
+        ) if not present else None,
+    )
+
+
 CHECKS = [
     check_exiftool, check_sane, check_scanner_discovery,
     check_anthropic_key, check_mistral_key, check_model_alias,
+    check_face_model,
 ]
 
 
