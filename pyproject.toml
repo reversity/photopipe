@@ -39,6 +39,7 @@ dependencies = [
     "PyYAML>=6.0.0",
     "opencv-python>=4.9.0",  # autocrop.py: photo edge detection / deskew
     "numpy>=1.26.0",         # autocrop.py
+    "hdbscan>=0.8.40",       # faces/clustering.py: density-based face grouping
     # "python-sane>=2.9.0",  # Optional: requires SANE dev headers
 ]
 
