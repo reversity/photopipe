@@ -60,3 +60,41 @@ def test_migration_adds_ai_jobs_table(tmp_path):
         assert cur.fetchone() is not None
     finally:
         conn.close()
+
+
+def test_migration_creates_faces_table(tmp_path):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        run_all_migrations(conn)
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='faces'"
+        )
+        assert cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def test_migration_creates_face_clusters_table(tmp_path):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        run_all_migrations(conn)
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='face_clusters'"
+        )
+        assert cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def test_migration_002_idempotent(tmp_path):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        run_all_migrations(conn)
+        run_all_migrations(conn)  # must not raise
+        cur = conn.execute("SELECT COUNT(*) FROM faces")
+        assert cur.fetchone()[0] == 0
+    finally:
+        conn.close()

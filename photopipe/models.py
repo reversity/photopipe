@@ -421,3 +421,32 @@ class AIJob(BaseModel):
 
     class Config:
         use_enum_values = True
+
+
+class Face(BaseModel):
+    """A single detected face in a photo, with its ArcFace embedding."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    photo_id: str
+    batch_id: str
+    bbox: tuple[int, int, int, int]   # x, y, w, h in front-image pixels
+    embedding: list[float]            # 512-d, L2-normalized
+    crop_path: Optional[Path] = None
+    cluster_id: Optional[str] = None
+    detection_score: Optional[float] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    class Config:
+        use_enum_values = True
+
+
+class FaceCluster(BaseModel):
+    """A group of faces believed to be the same person within one batch."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    batch_id: str
+    label: Optional[str] = None
+    representative_face_id: Optional[str] = None
+    is_noise: bool = False
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    class Config:
+        use_enum_values = True
