@@ -40,6 +40,8 @@ dependencies = [
     "opencv-python>=4.9.0",  # autocrop.py: photo edge detection / deskew
     "numpy>=1.26.0",         # autocrop.py
     "hdbscan>=0.8.40",       # faces/clustering.py: density-based face grouping
+    "insightface>=0.7.3",    # faces/detector.py: SCRFD detect + ArcFace embed
+    "onnxruntime>=1.17.0",   # insightface inference runtime
     # "python-sane>=2.9.0",  # Optional: requires SANE dev headers
 ]
 
