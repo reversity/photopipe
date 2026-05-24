@@ -40,14 +40,38 @@ Implementation plan: `docs/superpowers/plans/2026-05-17-photopipe-rebuild.md`
 
 ### Installation
 
+Two install paths on macOS. Pick one:
+
+**Standalone install** (recommended for everyday use — gives you a
+`PhotoPipe.app` in `~/Applications` you can double-click):
+
 ```bash
-# Clone or copy the project
+git clone https://github.com/reversity/photopipe.git
 cd photopipe
+./install-standalone.sh
+```
 
-# Run the install script (Mac)
-./install.sh
+What it does: installs Homebrew if missing → installs ExifTool +
+sane-backends + Python 3.12 → copies the app to `~/.photopipe-app/`
+with its own venv → drops a `PhotoPipe.app` bundle in `~/Applications/`
+plus a `run.sh` launcher. The cloned repo is no longer needed after
+this; the app runs out of `~/.photopipe-app/`.
 
-# Or manually install
+**In-place install** (recommended if you want to develop on the code or
+keep everything inside the cloned repo):
+
+```bash
+git clone https://github.com/reversity/photopipe.git
+cd photopipe
+./install.sh                # system deps + venv + pip install -e .
+# then
+source .venv/bin/activate
+streamlit run app.py
+```
+
+**Manual** (if you'd rather drive each step yourself):
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .

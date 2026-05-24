@@ -38,7 +38,7 @@ fi
 echo ""
 echo "Installing system dependencies..."
 
-for pkg in tesseract exiftool sane-backends python@3.12; do
+for pkg in exiftool sane-backends python@3.12; do
     if ! brew list $pkg &> /dev/null; then
         echo "Installing $pkg..."
         brew install $pkg
@@ -172,4 +172,12 @@ echo "     streamlit run app.py"
 echo ""
 echo "Scanner input:  ~/Pictures/Scanner_Input"
 echo "Photo output:   ~/Pictures/Scanned_Photos"
+echo ""
+echo "Next steps:"
+echo "  - Set API keys (in your shell or via the in-app setup wizard):"
+echo "      export ANTHROPIC_API_KEY='sk-ant-...'  # AI dating + Claude vision"
+echo "      export MISTRAL_API_KEY='...'           # primary handwriting OCR"
+echo "  - First Faces-page run downloads the InsightFace buffalo_l model (~300 MB)"
+echo "    into ~/.insightface/."
+echo "  - Run 'photopipe doctor' inside the venv to diagnose env / scanner / keys."
 echo ""

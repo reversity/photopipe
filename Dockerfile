@@ -1,14 +1,17 @@
 FROM python:3.12-slim
 
-# Install system dependencies
+# Install system dependencies.
+#
+# Note: Docker is intended for the curate/finalize pipeline (processing
+# already-scanned images). USB/network scanner access from inside a Linux
+# container on macOS is fragile; for the capture phase, install PhotoPipe
+# directly on the host via install-standalone.sh.
 RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    tesseract-ocr-eng \
     libexif-dev \
     perl \
     libimage-exiftool-perl \
-    libsane-dev \
-    sane-utils \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

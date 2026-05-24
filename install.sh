@@ -39,14 +39,6 @@ fi
 echo ""
 echo "Installing system dependencies..."
 
-# Tesseract OCR
-if ! command -v tesseract &> /dev/null; then
-    echo "Installing Tesseract OCR..."
-    brew install tesseract
-else
-    echo -e "${GREEN}Tesseract already installed${NC}"
-fi
-
 # ExifTool
 if ! command -v exiftool &> /dev/null; then
     echo "Installing ExifTool..."
@@ -143,15 +135,24 @@ echo ""
 echo "  1. Activate the virtual environment:"
 echo "     source $(pwd)/.venv/bin/activate"
 echo ""
-echo "  2. (Optional) Set your Anthropic API key for AI dating:"
-echo "     export ANTHROPIC_API_KEY='your-key-here'"
+echo "  2. (Optional) Set API keys for AI features:"
+echo "     export ANTHROPIC_API_KEY='sk-ant-...'    # AI dating + Claude vision OCR fallback"
+echo "     export MISTRAL_API_KEY='...'             # primary handwriting OCR on photo backs"
+echo "     (or store them in ~/.photopipe/settings.json — the in-app setup wizard can do this)"
 echo ""
 echo "  3. Launch the web interface:"
 echo "     streamlit run app.py"
 echo ""
 echo "  Or use the CLI:"
 echo "     photopipe --help"
+echo "     photopipe doctor          # diagnose env / deps / API keys"
+echo ""
+echo "Notes:"
+echo "  - First face-clustering run downloads the InsightFace buffalo_l model (~300 MB)"
+echo "    into ~/.insightface/. The Faces page will show progress."
+echo "  - macOS Tahoe (26+) may silently drop 'Local Network' permission after updates;"
+echo "    if the scanner stops being detected, re-grant it in System Settings."
 echo ""
 echo "Scanner input folder: ~/Pictures/Scanner_Input"
-echo "Output folder: ~/Pictures/Scanned_Photos"
+echo "Output folder:        ~/Pictures/Scanned_Photos"
 echo ""
