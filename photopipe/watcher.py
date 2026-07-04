@@ -78,12 +78,10 @@ class ScannerWatchHandler(FileSystemEventHandler):
                 except Exception as e:
                     print(f"Error processing {path}: {e}")
 
-    def on_created(self, event):
-        """Handle new file creation."""
-        if event.is_directory:
+    def _track(self, path: Path) -> None:
+        # Skip hidden files and AppleDouble sidecars ("._foo.jpg")
+        if path.name.startswith("."):
             return
-
-        path = Path(event.src_path)
 
         # Check if it's an image file
         if path.suffix.lower() not in IMAGE_EXTENSIONS:
@@ -91,6 +89,20 @@ class ScannerWatchHandler(FileSystemEventHandler):
 
         with self._lock:
             self._pending_files[path] = time.time()
+
+    def on_created(self, event):
+        """Handle new file creation."""
+        if event.is_directory:
+            return
+        self._track(Path(event.src_path))
+
+    def on_moved(self, event):
+        """Handle files renamed/moved into the watch folder (temp-write-then-
+        rename writers, Finder drags on the same volume emit moves, not
+        creates)."""
+        if event.is_directory:
+            return
+        self._track(Path(event.dest_path))
 
     def on_modified(self, event):
         """Handle file modification (reset stability timer)."""
@@ -259,6 +271,10 @@ class BatchWatcher:
             callback=self._handle_new_file,
         )
         self._pending_fronts: dict[int, Path] = {}
+        # Backs whose front hasn't arrived yet. Fronts are larger files, so
+        # in duplex scans the back regularly stabilizes (and fires) first —
+        # dropping it would permanently lose the front/back association.
+        self._pending_backs: dict[int, Path] = {}
         self._lock = threading.Lock()
 
     def _handle_new_file(self, path: Path):
@@ -267,32 +283,40 @@ class BatchWatcher:
             extract_sequence_number,
             is_back_image,
         )
-        from photopipe.models import PhotoPair
         from photopipe.config import get_config
 
         config = get_config()
-        front_pattern = config.scanner.front_pattern.replace(".jpg", "").replace(".JPG", "")
-        back_pattern = config.scanner.back_pattern.replace(".jpg", "").replace(".JPG", "")
+        front_pattern = config.scanner.front_pattern
+        back_pattern = config.scanner.back_pattern
 
         filename_stem = path.stem
 
         with self._lock:
             if is_back_image(filename_stem, back_pattern):
-                # This is a back image - find matching front
-                seq_num = extract_sequence_number(
-                    filename_stem.replace("_back", "").replace("_BACK", ""),
-                    front_pattern,
-                )
+                # This is a back image - the back pattern contains {num} too,
+                # so extract the sequence directly from the back stem.
+                seq_num = extract_sequence_number(filename_stem, back_pattern)
+                if seq_num is None:
+                    return
 
-                if seq_num and seq_num in self._pending_fronts:
+                if seq_num in self._pending_fronts:
                     # We have the front, create pair
                     front_path = self._pending_fronts.pop(seq_num)
                     self._create_photo_pair(front_path, path)
+                else:
+                    # Front not seen yet - hold the back until it arrives
+                    self._pending_backs[seq_num] = path
             else:
                 # This is a front image
                 seq_num = extract_sequence_number(filename_stem, front_pattern)
 
-                if seq_num:
+                if seq_num is not None:
+                    if seq_num in self._pending_backs:
+                        # Back arrived first - pair immediately
+                        back_path = self._pending_backs.pop(seq_num)
+                        self._create_photo_pair(path, back_path)
+                        return
+
                     # Wait briefly for potential back
                     self._pending_fronts[seq_num] = path
 
@@ -307,9 +331,9 @@ class BatchWatcher:
         """Check if front is still waiting for back."""
         with self._lock:
             if seq_num in self._pending_fronts:
-                # No back came, create pair without it
                 front_path = self._pending_fronts.pop(seq_num)
-                self._create_photo_pair(front_path, None)
+                back_path = self._pending_backs.pop(seq_num, None)
+                self._create_photo_pair(front_path, back_path)
 
     def _create_photo_pair(self, front_path: Path, back_path: Optional[Path]):
         """Create a new photo pair in the database."""
@@ -348,11 +372,12 @@ class BatchWatcher:
         """Stop watching."""
         self._watcher.stop()
 
-        # Process any remaining pending fronts
+        # Process any remaining pending fronts (pairing with a held back if one arrived)
         with self._lock:
             for seq_num, front_path in list(self._pending_fronts.items()):
-                self._create_photo_pair(front_path, None)
+                self._create_photo_pair(front_path, self._pending_backs.pop(seq_num, None))
             self._pending_fronts.clear()
+            self._pending_backs.clear()
 
     def __enter__(self):
         self.start()

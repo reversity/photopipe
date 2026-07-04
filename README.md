@@ -178,18 +178,20 @@ scanner:
   back_pattern: "IMG_{num}_back.jpg"
 
 handwriting_ocr:
-  provider: mistral          # mistral | claude | none
-  model: mistral-ocr-3
-  confidence_threshold: 0.6  # below this, fall back to vlm
-  api_key_env: MISTRAL_API_KEY
+  provider: auto                      # auto | mistral | claude
+  mistral_model: mistral-ocr-3
+  mistral_api_key_env_var: MISTRAL_API_KEY
+  confidence_fallback_threshold: 0.6  # below this, fall back to Claude vision
 
 vlm:
-  enabled: true
+  provider: anthropic
   model: claude-sonnet-4-6
-  batch_size: 12             # photos per AI call (10–15 recommended)
-  use_prompt_caching: true
-  use_batch_api: false       # set true for cheaper async runs
-  api_key_env: ANTHROPIC_API_KEY
+  api_key_env_var: ANTHROPIC_API_KEY
+  max_image_dimension: 1568
+  cache_ttl: 5m                       # 5m | 1h — prompt-cache lifetime
+
+output:
+  export_backs: false                 # export back images alongside fronts
 ```
 
 ## AI Dating

@@ -19,7 +19,7 @@ def main():
     st.title("📦 Buckets")
     st.caption("Raw scans waiting to be curated into batches.")
 
-    show_all = st.checkbox("Show converted buckets", value=False)
+    show_all = st.checkbox("Show converted buckets", value=False, help="Buckets that have already become batches are hidden by default. Check this to see them for reference — they can't be converted again.")
     # Note: Bucket has use_enum_values=True, so bucket.status is a plain string
     # (e.g. "open", "closed", "converted"). Comparisons against BucketStatus.X
     # still work because BucketStatus is a str-Enum mixin.
@@ -61,16 +61,16 @@ def main():
             if bucket.status == BucketStatus.CLOSED:
                 with st.form(f"convert_{bucket.id}"):
                     st.markdown("### Convert to Batch")
-                    name = st.text_input("Batch name", value=bucket.label)
+                    name = st.text_input("Batch name", value=bucket.label, help="Becomes the batch's name everywhere else in the app, including exported filenames. You can rename it later on the Batch Setup page.")
                     c1, c2 = st.columns(2)
                     with c1:
-                        date_start = st.date_input("Date start (optional)", value=None)
+                        date_start = st.date_input("Date start (optional)", value=None, help="Earliest date these photos could be from. Gives AI dating a range to work within — leave blank if you have no idea.")
                     with c2:
-                        date_end = st.date_input("Date end (optional)", value=None)
-                    location = st.text_input("Location (optional)")
-                    people = st.text_input("People (comma-separated, optional)")
-                    event = st.text_area("Event description (optional)", height=60)
-                    if st.form_submit_button("✅ Convert to Batch", type="primary"):
+                        date_end = st.date_input("Date end (optional)", value=None, help="Latest date these photos could be from. Leave blank if unknown.")
+                    location = st.text_input("Location (optional)", help="Where the photos were taken, e.g. 'Toledo, OH'. Saved with the batch and later written into each photo's metadata.")
+                    people = st.text_input("People (comma-separated, optional)", help="Names of people likely in these photos, e.g. 'Mom, Dad, Grandma Rose'. Tagged onto every photo in the batch.")
+                    event = st.text_area("Event description (optional)", height=60, help="Any context you remember — the occasion, kids' ages, who scanned it. The AI uses this to estimate dates more accurately.")
+                    if st.form_submit_button("✅ Convert to Batch", type="primary", help="Moves this bucket's photos into a new batch so you can run AI dating on the Curate page. A bucket can only be converted once."):
                         batch = svc.convert_to_batch(
                             bucket.id,
                             name=name,

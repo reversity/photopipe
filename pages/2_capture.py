@@ -42,6 +42,8 @@ def init_state() -> None:
         st.session_state.current_bucket_id = None
     if "helper_name" not in st.session_state:
         st.session_state.helper_name = ""
+    if "scan_errors" not in st.session_state:
+        st.session_state.scan_errors = []
 
 
 def _bucket_selection_screen(svc: BucketService) -> None:
@@ -55,12 +57,14 @@ def _bucket_selection_screen(svc: BucketService) -> None:
     helper = st.text_input(
         "Your name (optional)",
         value=st.session_state.helper_name,
+        help="Records who scanned this stack, so the owner knows who to ask about it later.",
     )
     if st.button(
         "🟢 Start scanning",
         type="primary",
         use_container_width=True,
         disabled=not label.strip(),
+        help="Opens a new bucket with this label. You can scan several stacks into the same bucket before pressing Done.",
     ):
         st.session_state.helper_name = helper
         bucket = svc.open_bucket(
@@ -72,7 +76,7 @@ def _bucket_selection_screen(svc: BucketService) -> None:
 
 def _scan_and_progress(bucket) -> None:
     """Scan button + progress handler. Reruns the page on completion."""
-    if not st.button("🟢 Scan Stack", type="primary", use_container_width=True):
+    if not st.button("🟢 Scan Stack", type="primary", use_container_width=True, help="Runs the scanner and adds everything in the feeder to this bucket. Load the next stack and press again to keep going."):
         return
 
     progress_box = st.empty()
@@ -91,18 +95,28 @@ def _scan_and_progress(bucket) -> None:
         result = capture_batch(
             bucket,
             db=st.session_state.db,
-            scanner_device=cfg.scanner.device or "epsonds:net:192.168.1.62",
+            scanner_device=cfg.scanner.device,
             resolution=cfg.scanner.resolution,
             duplex=cfg.scanner.duplex,
             progress=on_progress,
         )
 
     if result.errors:
-        for err in result.errors:
-            st.error(err)
+        st.session_state.scan_errors = list(result.errors)
     if result.photos_added:
         st.success(f"✓ Added {result.photos_added} photos to this bucket")
     st.rerun()
+
+
+def _show_scan_errors() -> None:
+    """Show errors from the last scan, persisted across the post-scan rerun."""
+    if not st.session_state.scan_errors:
+        return
+    for err in st.session_state.scan_errors:
+        st.error(err)
+    if st.button("Dismiss errors"):
+        st.session_state.scan_errors = []
+        st.rerun()
 
 
 def _thumbnail_grid(photos) -> None:
@@ -143,6 +157,7 @@ def main() -> None:
     svc = BucketService(db)
 
     st.title("📷 Scan Photos")
+    st.caption("Helper Mode — the first step of the workflow: scan stacks of photos into a labeled bucket. The owner turns buckets into batches later.")
 
     if st.session_state.current_bucket_id is None:
         _bucket_selection_screen(svc)
@@ -161,6 +176,7 @@ def main() -> None:
         st.caption(f"Scanned by {bucket.helper_name}")
 
     _scan_and_progress(bucket)
+    _show_scan_errors()
 
     photos = db.get_photos_by_bucket(bucket.id)
     _thumbnail_grid(photos)
@@ -168,12 +184,12 @@ def main() -> None:
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("✓ Done with this bucket", use_container_width=True):
+        if st.button("✓ Done with this bucket", use_container_width=True, help="Closes the bucket so the owner can turn it into a batch. No more photos can be added to it after this."):
             svc.close_bucket(bucket.id)
             st.session_state.current_bucket_id = None
             st.rerun()
     with col2:
-        if st.button("➕ Start a new bucket", use_container_width=True):
+        if st.button("➕ Start a new bucket", use_container_width=True, help="Closes this bucket and returns to the label screen so you can begin a new one — use this when you switch albums or boxes."):
             svc.close_bucket(bucket.id)
             st.session_state.current_bucket_id = None
             st.rerun()

@@ -18,6 +18,29 @@ from photopipe.models import PhotoPair, Batch
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 
 
+def _strip_pattern_extension(pattern: str) -> str:
+    """Drop a trailing image extension from a filename pattern (patterns are
+    matched against extension-less stems)."""
+    lowered = pattern.lower()
+    for ext in IMAGE_EXTENSIONS:
+        if lowered.endswith(ext):
+            return pattern[: -len(ext)]
+    return pattern
+
+
+def _pattern_to_regex(pattern: str, capture_num: bool) -> str:
+    """Convert a "{name}_{num}" style pattern into an anchored regex.
+
+    Literal characters are escaped BEFORE the placeholders are substituted so
+    the substituted regex fragments survive intact, and callers use fullmatch
+    so a front pattern can't prefix-match a back filename.
+    """
+    regex = re.escape(_strip_pattern_extension(pattern))
+    regex = regex.replace(re.escape("{name}"), r".+?")
+    regex = regex.replace(re.escape("{num}"), r"(\d+)" if capture_num else r"\d+")
+    return regex
+
+
 def extract_sequence_number(filename: str, pattern: str) -> Optional[int]:
     """
     Extract sequence number from filename based on pattern.
@@ -29,14 +52,7 @@ def extract_sequence_number(filename: str, pattern: str) -> Optional[int]:
     Returns:
         The extracted sequence number, or None if no match
     """
-    # Convert pattern to regex
-    # Replace {name} with a non-capturing group for any characters
-    regex_pattern = pattern.replace("{name}", r"(?:.+?)")
-    # Replace {num} with a capturing group for digits
-    regex_pattern = regex_pattern.replace("{num}", r"(\d+)")
-    regex_pattern = regex_pattern.replace(".", r"\.")
-
-    match = re.match(regex_pattern, filename, re.IGNORECASE)
+    match = re.fullmatch(_pattern_to_regex(pattern, capture_num=True), filename, re.IGNORECASE)
     if match:
         return int(match.group(1))
     return None
@@ -53,11 +69,8 @@ def is_back_image(filename: str, back_pattern: str) -> bool:
     Returns:
         True if this is a back image
     """
-    # Convert pattern to regex
-    regex_pattern = back_pattern.replace("{name}", r".+?")
-    regex_pattern = regex_pattern.replace("{num}", r"\d+")
-    regex_pattern = regex_pattern.replace(".", r"\.")
-    return bool(re.match(regex_pattern, filename, re.IGNORECASE))
+    regex = _pattern_to_regex(back_pattern, capture_num=False)
+    return bool(re.fullmatch(regex, filename, re.IGNORECASE))
 
 
 def find_back_for_front(
@@ -124,15 +137,20 @@ def scan_input_folder(
     front_pattern = front_pattern or config.scanner.front_pattern
     back_pattern = back_pattern or config.scanner.back_pattern
 
-    # Strip extension from patterns for matching
-    front_pattern_stem = front_pattern.replace(".jpg", "").replace(".JPG", "")
-    back_pattern_stem = back_pattern.replace(".jpg", "").replace(".JPG", "")
+    # Patterns may include an extension (e.g. "{name}_{num}.jpg"); matching is
+    # done on extension-less stems, so strip it.
+    front_pattern_stem = _strip_pattern_extension(front_pattern)
+    back_pattern_stem = _strip_pattern_extension(back_pattern)
 
     pairs: dict[int, dict] = {}
 
     # Scan all image files
     for file_path in input_folder.iterdir():
         if not file_path.is_file():
+            continue
+
+        # Skip hidden files and AppleDouble sidecars ("._foo.jpg" on SMB/exFAT volumes)
+        if file_path.name.startswith("."):
             continue
 
         if file_path.suffix.lower() not in IMAGE_EXTENSIONS:

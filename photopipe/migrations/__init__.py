@@ -7,9 +7,9 @@ Each migration module declares ``MIGRATION_ID`` and an ``up(conn)`` function.
 
 import sqlite3
 
-from photopipe.migrations import _001_phase_and_buckets, _002_faces
+from photopipe.migrations import _001_phase_and_buckets, _002_faces, _003_propagated_label
 
-MIGRATIONS = [_001_phase_and_buckets, _002_faces]
+MIGRATIONS = [_001_phase_and_buckets, _002_faces, _003_propagated_label]
 
 
 def run_all_migrations(conn: sqlite3.Connection) -> None:

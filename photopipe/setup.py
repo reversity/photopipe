@@ -42,8 +42,13 @@ def load_settings() -> UserSettings:
             with open(settings_path) as f:
                 data = json.load(f)
             return UserSettings(**data)
-        except (json.JSONDecodeError, Exception):
-            pass
+        except Exception as e:
+            # Surface the problem instead of silently returning defaults —
+            # a later save would permanently discard the stored API key.
+            print(
+                f"Warning: could not load {settings_path} ({e}); "
+                "using defaults for this session."
+            )
 
     return UserSettings()
 

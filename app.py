@@ -95,7 +95,7 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.image("https://via.placeholder.com/150x50?text=PhotoPipe", use_container_width=True)
+        st.markdown("## 📷 PhotoPipe")
         st.markdown("---")
 
         # Quick stats
@@ -122,10 +122,15 @@ def main():
         # Current batch selector
         if batches:
             batch_options = {b.name: b.id for b in batches}
+            batch_names = list(batch_options.keys())
+            batch_ids = list(batch_options.values())
+            current_id = st.session_state.current_batch_id
+            current_index = batch_ids.index(current_id) if current_id in batch_ids else None
             selected_name = st.selectbox(
                 "Current Batch",
-                options=list(batch_options.keys()),
-                index=0 if st.session_state.current_batch_id is None else None,
+                options=batch_names,
+                index=current_index,
+                placeholder="Select a batch",
             )
             if selected_name:
                 st.session_state.current_batch_id = batch_options[selected_name]
@@ -155,6 +160,8 @@ def main():
         with col2:
             if st.button("⚙️ Config", use_container_width=True):
                 st.switch_page("pages/settings.py")
+        if st.button("📖 Help & Tutorial", use_container_width=True):
+            st.switch_page("pages/6_help.py")
 
         st.markdown("---")
         # Helper Mode: hides owner-only pages and redirects to the bare
@@ -175,8 +182,30 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Welcome message and quick actions
+    # Quick-start tutorial: expanded on a fresh install (nothing scanned yet),
+    # collapsed but always available afterwards.
     st.markdown("---")
+    fresh_install = not st.session_state.db.get_all_batches()
+    with st.expander("🚀 Quick start — how PhotoPipe works", expanded=fresh_install):
+        st.markdown(
+            """
+1. **📥 Capture** — feed stacks through the scanner into labeled *buckets*.
+   Anyone can do this; flip on **Helper Mode** (sidebar) before handing over.
+2. **🗂 Buckets** — convert each bucket to a *batch*, adding what you know:
+   rough dates, place, people, event.
+3. **👁️ Curate** — run AI dating; handwriting from photo backs is already
+   read during capture. Review and approve.
+4. **🧑 Faces** *(optional)* — group faces and name each person once; names
+   become searchable keywords on every photo they appear in.
+5. **✅ Finalize** — write the metadata into the files and export them
+   organized by year.
+
+Originals are always preserved untouched in the archive folder. The
+**📖 Help** page walks through each step in detail.
+            """
+        )
+        if st.button("Open the full tutorial", key="goto_help"):
+            st.switch_page("pages/6_help.py")
 
     col1, col2, col3, col4 = st.columns(4)
 

@@ -39,10 +39,17 @@ class InsightFaceBackend:
         """Construct the InsightFace app. Triggers the model download."""
         from insightface.app import FaceAnalysis
 
-        app = FaceAnalysis(name="buffalo_l")
-        # ctx_id=0 selects the first provider; onnxruntime picks CoreML on
-        # Apple Silicon and falls back to CPU automatically.
-        app.prepare(ctx_id=0, det_size=(640, 640))
+        try:
+            app = FaceAnalysis(name="buffalo_l")
+            # ctx_id is a GPU device index; on CPU-only onnxruntime it is
+            # ignored and inference runs on the CPU provider.
+            app.prepare(ctx_id=0, det_size=(640, 640))
+        except Exception as e:
+            model_dir = Path.home() / ".insightface" / "models" / "buffalo_l"
+            raise RuntimeError(
+                f"Could not load the face model: {e}. If a first download was "
+                f"interrupted, delete {model_dir} and retry — it will re-download."
+            ) from e
         return app
 
     def detect(self, image_path: Path) -> list[DetectedFace]:
@@ -58,9 +65,16 @@ class InsightFaceBackend:
         # insightface expects BGR
         bgr = rgb[:, :, ::-1]
 
+        img_h, img_w = bgr.shape[:2]
         results: list[DetectedFace] = []
         for f in self._app.get(bgr):
+            # SCRFD boxes can fall (partly) outside the image; clamp so
+            # persisted bboxes and crops are always valid.
             x1, y1, x2, y2 = (int(v) for v in f.bbox)
+            x1 = max(0, min(x1, img_w - 1))
+            y1 = max(0, min(y1, img_h - 1))
+            x2 = max(x1 + 1, min(x2, img_w))
+            y2 = max(y1 + 1, min(y2, img_h))
             results.append(
                 DetectedFace(
                     bbox=(x1, y1, x2 - x1, y2 - y1),

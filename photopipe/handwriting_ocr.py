@@ -29,7 +29,9 @@ If there is no readable text, respond with an empty string."""
 @dataclass
 class HandwritingResult:
     text: str
-    confidence: float
+    # None means the provider gave no confidence signal (distinct from a
+    # low score — an unknown confidence must not trigger the paid fallback).
+    confidence: Optional[float]
     provider: str  # "mistral" | "claude" | "none"
     extracted_date: Optional[date] = None
 
@@ -68,15 +70,15 @@ class HandwritingOCR:
     def mistral_client(self) -> Any:
         """Lazily instantiate the Mistral SDK client.
 
-        The mistralai >= 2.0 package exposes ``Mistral`` from ``mistralai.client``;
-        we fall back to a top-level ``mistralai`` import for older 1.x layouts.
+        The mistralai >= 1.0 package exposes ``Mistral`` at the top level;
+        ``mistralai.client`` is the older 0.x layout, kept as a fallback.
         Local import keeps the SDK optional at module import time.
         """
         if self._mistral_client is None and self.mistral_api_key:
             try:
-                from mistralai.client import Mistral
-            except ImportError:  # pragma: no cover — older SDK layout
                 from mistralai import Mistral
+            except ImportError:  # pragma: no cover — older SDK layout
+                from mistralai.client import Mistral
             self._mistral_client = Mistral(api_key=self.mistral_api_key)
         return self._mistral_client
 
@@ -94,11 +96,22 @@ class HandwritingOCR:
             result = self._call_mistral(image_path)
 
         # Fall back to VLM unless the user has pinned provider="mistral".
-        if (
+        # An unknown (None) confidence with readable text does NOT trigger
+        # the fallback — that would silently pay for both providers on
+        # every photo back.
+        needs_fallback = (
             result is None
-            or result.confidence < self.cfg.confidence_fallback_threshold
-        ) and self.cfg.provider != "mistral":
-            result = self._call_vlm(image_path)
+            or not result.text
+            or (
+                result.confidence is not None
+                and result.confidence < self.cfg.confidence_fallback_threshold
+            )
+        )
+        if needs_fallback and self.cfg.provider != "mistral":
+            vlm_result = self._call_vlm(image_path)
+            # Keep the Mistral text if the fallback produced nothing better.
+            if result is None or not result.text or vlm_result.text:
+                result = vlm_result
 
         if result is None:
             result = HandwritingResult(text="", confidence=0.0, provider="none")
@@ -136,7 +149,7 @@ class HandwritingOCR:
             for region in getattr(page, "regions", [])
             if region.confidence is not None
         ]
-        avg_conf = sum(confs) / len(confs) if confs else 0.5
+        avg_conf = sum(confs) / len(confs) if confs else None
         return HandwritingResult(text=text.strip(), confidence=avg_conf, provider="mistral")
 
     def _call_vlm(self, image_path: Path) -> HandwritingResult:

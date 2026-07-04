@@ -4,6 +4,7 @@ File management operations for PhotoPipe.
 Handles file copying, renaming, and output folder organization.
 """
 
+import filecmp
 import json
 import shutil
 from datetime import date, datetime
@@ -73,24 +74,17 @@ def generate_output_filename(
     template = config.output.filename_template
     batch_name = sanitize_filename(batch.name)
 
-    # Try format with side, fall back without
-    try:
-        filename = template.format(
-            date=photo_date.strftime("%Y-%m-%d"),
-            batch_name=batch_name,
-            sequence=photo.sequence_num,
-            side=side,
-        )
-    except KeyError:
-        # Template doesn't include {side}
-        filename = template.format(
-            date=photo_date.strftime("%Y-%m-%d"),
-            batch_name=batch_name,
-            sequence=photo.sequence_num,
-        )
-        # Add side suffix for backs
-        if side == "back":
-            filename = f"{filename}_back"
+    # str.format silently ignores extra kwargs, so the {side} presence must
+    # be checked explicitly — otherwise fronts and backs generate identical
+    # names and the back overwrites the exported front.
+    filename = template.format(
+        date=photo_date.strftime("%Y-%m-%d"),
+        batch_name=batch_name,
+        sequence=photo.sequence_num,
+        side=side,
+    )
+    if side == "back" and "{side}" not in template:
+        filename = f"{filename}_back"
 
     # Add extension from original file
     if side == "front":
@@ -155,19 +149,32 @@ def copy_to_archive(photo: PhotoPair, batch: Batch) -> tuple[Optional[Path], Opt
     archive_folder = (config.paths.archive_folder / batch_name).expanduser().resolve()
     archive_folder.mkdir(parents=True, exist_ok=True)
 
-    # Copy front
-    front_dest = archive_folder / photo.front_path.name
-    if not front_dest.exists():
-        shutil.copy2(photo.front_path, front_dest)
+    front_dest = _archive_copy(photo.front_path, archive_folder)
 
-    # Copy back if exists
     back_dest = None
     if photo.back_path and photo.back_path.exists():
-        back_dest = archive_folder / photo.back_path.name
-        if not back_dest.exists():
-            shutil.copy2(photo.back_path, back_dest)
+        back_dest = _archive_copy(photo.back_path, archive_folder)
 
     return front_dest, back_dest
+
+
+def _archive_copy(source: Path, archive_folder: Path) -> Path:
+    """Copy ``source`` into the archive without ever losing a photo to a name
+    collision: scanner filenames repeat across sessions and different batch
+    names can sanitize to the same folder, so a same-named file that is NOT
+    byte-identical gets a suffixed name instead of being skipped."""
+    dest = archive_folder / source.name
+    counter = 1
+    while dest.exists():
+        try:
+            if filecmp.cmp(source, dest, shallow=False):
+                return dest  # identical copy already archived
+        except OSError:
+            pass
+        dest = archive_folder / f"{source.stem}_{counter}{source.suffix}"
+        counter += 1
+    shutil.copy2(source, dest)
+    return dest
 
 
 def finalize_photo(
@@ -304,7 +311,7 @@ def finalize_batch(
                 photo.date_source = DateSource.BATCH_DEFAULT
 
         # Finalize the photo
-        photo = finalize_photo(photo, batch, db)
+        photo = finalize_photo(photo, batch, db, export_backs=config.output.export_backs)
         finalized_photos.append(photo)
 
         # Track statistics
@@ -323,12 +330,9 @@ def finalize_batch(
         if progress_callback:
             progress_callback(i + 1, total)
 
-    # Update batch status
-    batch.status = "complete"
-    db.update_batch(batch)
-
     # Generate batch report
     output_folder = generate_output_folder(batch)
+    output_folder.mkdir(parents=True, exist_ok=True)
 
     report = BatchReport(
         batch_name=batch.name,
@@ -362,6 +366,12 @@ def finalize_batch(
     report_path = output_folder / "_batch_report.json"
     report_path.write_text(report.to_json())
 
+    # Only mark complete once the work actually happened; a run that
+    # finalized nothing (everything still needs review) is not complete.
+    if finalized_photos:
+        batch.status = "complete"
+        db.update_batch(batch)
+
     db.log_action(
         batch_id=batch.id,
         action="batch_finalized",
@@ -392,23 +402,26 @@ def generate_web_copy(
     """
     dest_folder.mkdir(parents=True, exist_ok=True)
 
-    img = Image.open(source_path)
+    with Image.open(source_path) as img:
+        # JPEG output can't hold alpha/palette modes
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
 
-    # Calculate new size maintaining aspect ratio
-    width, height = img.size
-    if width > max_dimension or height > max_dimension:
-        if width > height:
-            new_width = max_dimension
-            new_height = int(height * (max_dimension / width))
-        else:
-            new_height = max_dimension
-            new_width = int(width * (max_dimension / height))
+        # Calculate new size maintaining aspect ratio
+        width, height = img.size
+        if width > max_dimension or height > max_dimension:
+            if width > height:
+                new_width = max_dimension
+                new_height = int(height * (max_dimension / width))
+            else:
+                new_height = max_dimension
+                new_width = int(width * (max_dimension / height))
 
-        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-    # Save with reasonable quality
-    dest_path = dest_folder / source_path.name
-    img.save(dest_path, quality=85, optimize=True)
+        # Save with reasonable quality
+        dest_path = dest_folder / source_path.name
+        img.save(dest_path, quality=85, optimize=True)
 
     return dest_path
 
@@ -427,9 +440,9 @@ def generate_thumbnail(
     Returns:
         PIL Image thumbnail
     """
-    img = Image.open(source_path)
-    img.thumbnail(size, Image.Resampling.LANCZOS)
-    return img
+    with Image.open(source_path) as img:
+        img.thumbnail(size, Image.Resampling.LANCZOS)
+        return img.copy()
 
 
 def cleanup_input_folder(
@@ -453,18 +466,30 @@ def cleanup_input_folder(
     if not delete_processed:
         return 0
 
+    config = get_config()
+    archive_folder = (
+        config.paths.archive_folder / sanitize_filename(batch.name)
+    ).expanduser()
+
+    def safe_delete(src: Optional[Path], output_copy: Optional[Path]) -> bool:
+        """Delete an input file only when a copy verifiably exists elsewhere
+        (finalized output or archive) — never delete the only copy."""
+        if not src or not src.exists():
+            return False
+        has_output = output_copy is not None and output_copy.exists()
+        has_archive = (archive_folder / src.name).exists()
+        if has_output or has_archive:
+            src.unlink()
+            return True
+        return False
+
     photos = db.get_photos_by_batch(batch.id, status=PhotoStatus.FINALIZED)
     cleaned = 0
 
     for photo in photos:
-        # Delete front
-        if photo.front_path.exists():
-            photo.front_path.unlink()
+        if safe_delete(photo.front_path, photo.output_front_path):
             cleaned += 1
-
-        # Delete back
-        if photo.back_path and photo.back_path.exists():
-            photo.back_path.unlink()
+        if safe_delete(photo.back_path, photo.output_back_path):
             cleaned += 1
 
     return cleaned

@@ -5,7 +5,6 @@ Uses geopy with Nominatim (OpenStreetMap) for free geocoding.
 """
 
 import time
-from functools import lru_cache
 from typing import Optional
 
 from geopy.geocoders import Nominatim
@@ -16,6 +15,11 @@ from photopipe.models import Location, LocationAccuracy
 
 # Rate limiting: Nominatim requires max 1 request per second
 _last_request_time = 0.0
+
+# Manual caches (not lru_cache): only successes are stored, so a transient
+# network failure can't permanently mark a location un-geocodable.
+_location_cache: dict[tuple[str, str], Location] = {}
+_components_cache: dict[tuple[float, float], dict] = {}
 
 
 def _rate_limit():
@@ -35,7 +39,6 @@ def get_geocoder() -> Nominatim:
     )
 
 
-@lru_cache(maxsize=500)
 def geocode_location(location_text: str, country_hint: str = "USA") -> Optional[Location]:
     """
     Convert user-provided location text to coordinates.
@@ -50,7 +53,11 @@ def geocode_location(location_text: str, country_hint: str = "USA") -> Optional[
     if not location_text or not location_text.strip():
         return None
 
-    _rate_limit()
+    cache_key = (location_text.strip().lower(), country_hint)
+    cached = _location_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     geolocator = get_geocoder()
 
     # Try original query first
@@ -60,8 +67,18 @@ def geocode_location(location_text: str, country_hint: str = "USA") -> Optional[
     ]
 
     for query in queries:
-        try:
-            result = geolocator.geocode(query, exactly_one=True, addressdetails=True)
+        # One retry on timeout for the SAME query before moving on
+        for _attempt in range(2):
+            _rate_limit()
+            try:
+                result = geolocator.geocode(query, exactly_one=True, addressdetails=True)
+            except GeocoderTimedOut:
+                time.sleep(2)
+                continue
+            except GeocoderServiceError:
+                break
+            except Exception:
+                break
 
             if result:
                 # Determine accuracy based on result type
@@ -71,24 +88,16 @@ def geocode_location(location_text: str, country_hint: str = "USA") -> Optional[
                 elif result.raw.get("addresstype") in ("city", "town", "village"):
                     accuracy = LocationAccuracy.REGION
 
-                # Get formatted address
-                address = result.address
-
-                return Location(
+                location = Location(
                     description=location_text,
-                    address=address,
+                    address=result.address,
                     latitude=result.latitude,
                     longitude=result.longitude,
                     accuracy=accuracy,
                 )
-
-        except GeocoderTimedOut:
-            time.sleep(2)
-            continue
-        except GeocoderServiceError:
-            continue
-        except Exception:
-            continue
+                _location_cache[cache_key] = location
+                return location
+            break  # query resolved to nothing — try the next query form
 
     return None
 
@@ -136,6 +145,14 @@ def parse_location_components(location: Location) -> dict:
     if not location.address:
         return components
 
+    # Finalizing a batch calls this once per photo with the SAME batch
+    # location — cache per coordinate so a 300-photo batch issues one
+    # Nominatim request, not 300 identical ones.
+    cache_key = (location.latitude, location.longitude)
+    cached = _components_cache.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
     # Try to extract from reverse geocoded address
     _rate_limit()
     geolocator = get_geocoder()
@@ -152,9 +169,11 @@ def parse_location_components(location: Location) -> dict:
             components["city"] = addr.get("city") or addr.get("town") or addr.get("village")
             components["state"] = addr.get("state")
             components["country"] = addr.get("country")
+            _components_cache[cache_key] = dict(components)
 
     except Exception:
-        # Fall back to parsing the address string
+        # Fall back to parsing the address string (not cached — the network
+        # lookup may succeed next time)
         parts = location.address.split(",")
         if len(parts) >= 3:
             components["city"] = parts[-3].strip()
@@ -182,5 +201,6 @@ def validate_coordinates(latitude: float, longitude: float) -> bool:
 
 
 def clear_geocoding_cache():
-    """Clear the geocoding cache."""
-    geocode_location.cache_clear()
+    """Clear the geocoding caches."""
+    _location_cache.clear()
+    _components_cache.clear()

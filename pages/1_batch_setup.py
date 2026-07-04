@@ -27,6 +27,9 @@ def init_session_state():
     if "editing_batch_id" not in st.session_state:
         st.session_state.editing_batch_id = None
 
+    if "confirm_delete_batch_id" not in st.session_state:
+        st.session_state.confirm_delete_batch_id = None
+
 
 
 def parse_approximate_date(text: str) -> tuple[date | None, date | None]:
@@ -136,15 +139,17 @@ def create_batch_form():
     template_options = {"None": None}
     template_options.update({t.name: t for t in templates})
 
+    # Template selector (outside the form so changing it reruns and the
+    # form fields pick up the template's values as defaults)
+    selected_template = st.selectbox(
+        "Load from Template",
+        options=list(template_options.keys()),
+        help="Pre-fills the location and people fields from a saved template. Choose 'None' to start blank.",
+    )
+
+    template = template_options.get(selected_template)
+
     with st.form("create_batch_form"):
-        # Template selector
-        selected_template = st.selectbox(
-            "Load from Template",
-            options=list(template_options.keys()),
-        )
-
-        template = template_options.get(selected_template)
-
         col1, col2 = st.columns(2)
 
         with col1:
@@ -177,6 +182,7 @@ def create_batch_form():
                 "Event/Description",
                 placeholder="e.g., Summer vacation at Grandma's house. Kids were 5 and 8.",
                 height=100,
+                help="Any context you remember about these photos. The AI uses this when estimating dates, so details like kids' ages help a lot.",
             )
 
             # People tags - use template, then user settings defaults
@@ -200,7 +206,7 @@ def create_batch_form():
         with col1:
             submitted = st.form_submit_button("Create Batch", type="primary")
         with col2:
-            save_template = st.form_submit_button("Save as Template")
+            save_template = st.form_submit_button("Save as Template", help="Saves the location and people (not dates) as a reusable template for future batches. No batch is created.")
 
         if submitted:
             if not batch_name:
@@ -320,10 +326,19 @@ def batch_list():
                 if st.button("Edit", key=f"edit_{batch.id}"):
                     st.session_state.editing_batch_id = batch.id
                     st.rerun()
-                if st.button("Delete", key=f"delete_{batch.id}"):
-                    db.delete_batch(batch.id)
-                    st.success(f"Deleted batch '{batch.name}'")
-                    st.rerun()
+                if st.session_state.confirm_delete_batch_id == batch.id:
+                    st.warning(f"Delete '{batch.name}'?")
+                    if st.button("Yes, delete", key=f"confirm_delete_{batch.id}"):
+                        db.delete_batch(batch.id)
+                        st.session_state.confirm_delete_batch_id = None
+                        st.rerun()
+                    if st.button("Cancel", key=f"cancel_delete_{batch.id}"):
+                        st.session_state.confirm_delete_batch_id = None
+                        st.rerun()
+                else:
+                    if st.button("Delete", key=f"delete_{batch.id}", help="Removes this batch and its photo records from PhotoPipe after a confirmation step. Scanned image files stay on disk."):
+                        st.session_state.confirm_delete_batch_id = batch.id
+                        st.rerun()
 
             st.markdown("---")
 
@@ -346,18 +361,25 @@ def edit_batch_form():
         with col1:
             batch_name = st.text_input("Batch Name *", value=batch.name)
 
-            # Show current date range and allow editing
-            current_date_str = batch.get_date_range_str() if batch.date_start else ""
-            approx_date = st.text_input(
-                "Approximate Date",
-                value=current_date_str,
-                placeholder="e.g., Summer 1985, June 1987, 1990",
-                help="Enter a year, month+year, or season+year",
+            date_start = st.date_input(
+                "Date Range Start",
+                value=batch.date_start,
+                min_value=date(1900, 1, 1),
+                max_value=date.today(),
+                help="Earliest date photos in this batch could be from. Used to bound AI date estimates and written into photo metadata.",
+            )
+            date_end = st.date_input(
+                "Date Range End",
+                value=batch.date_end,
+                min_value=date(1900, 1, 1),
+                max_value=date.today(),
+                help="Latest date photos in this batch could be from.",
             )
 
             location_text = st.text_input(
                 "Location",
                 value=batch.location_description or "",
+                help="If you change this, the new address is looked up again for GPS coordinates when you save.",
             )
 
         with col2:
@@ -376,6 +398,7 @@ def edit_batch_form():
                 "Status",
                 options=["pending", "processing", "review", "complete"],
                 index=["pending", "processing", "review", "complete"].index(batch.status),
+                help="Where this batch sits in the workflow. Normally updated automatically — 'complete' batches show up in the completed list on the Finalize page.",
             )
 
         col1, col2, col3 = st.columns([2, 1, 1])
@@ -386,9 +409,6 @@ def edit_batch_form():
             cancel = st.form_submit_button("Cancel")
 
         if submitted:
-            # Parse approximate date
-            date_start, date_end = parse_approximate_date(approx_date)
-
             people = [p.strip() for p in people_input.split(",") if p.strip()]
 
             # Re-geocode if location changed
@@ -451,6 +471,7 @@ def main():
     init_session_state()
 
     st.title("📁 Batch Setup")
+    st.caption("Step 3 of the workflow (Capture → Buckets → Batch Setup → Curate → Faces → Finalize): group photos into batches and add the context AI dating will use.")
     st.write("Create and manage batches of photos for processing.")
 
     # Show edit form if editing, otherwise show create form

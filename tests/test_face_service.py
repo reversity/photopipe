@@ -165,3 +165,67 @@ def test_move_face_changes_cluster(db, tmp_path):
     svc.move_face(face.id, target.id)
     moved = db.get_faces_by_batch(batch.id)[0]
     assert moved.cluster_id == target.id
+
+
+def test_propagate_after_rename_removes_stale_keyword(db, tmp_path):
+    batch, photos = _batch_with_photos(db, tmp_path, 1)
+    backend = MagicMock()
+    backend.detect.return_value = [
+        DetectedFace(bbox=(1, 2, 3, 4), embedding=_emb(1), detection_score=0.9)
+    ]
+    svc = FaceService(db, backend=backend, crop_root=tmp_path / "crops")
+    svc.detect_batch(batch)
+    svc.cluster_batch(batch)
+
+    # Put the lone face into a nameable (non-noise) cluster.
+    from photopipe.models import FaceCluster
+    cluster = FaceCluster(batch_id=batch.id)
+    db.create_face_cluster(cluster)
+    face = db.get_faces_by_batch(batch.id)[0]
+    face.cluster_id = cluster.id
+    db.update_face(face)
+
+    svc.name_cluster(cluster.id, "Rose")
+    svc.propagate_labels(batch)
+    photo = db.get_photo(photos[0].id)
+    assert "Rose" in photo.final_keywords
+
+    svc.name_cluster(cluster.id, "Grandma Rose")
+    svc.propagate_labels(batch)
+    photo = db.get_photo(photos[0].id)
+    assert "Grandma Rose" in photo.final_keywords
+    assert "Rose" not in photo.final_keywords
+
+
+def test_name_cluster_strips_whitespace(db, tmp_path):
+    batch, _photos = _batch_with_photos(db, tmp_path, 1)
+    from photopipe.models import FaceCluster
+    cluster = FaceCluster(batch_id=batch.id)
+    db.create_face_cluster(cluster)
+    svc = FaceService(db, backend=MagicMock(), crop_root=tmp_path / "crops")
+    svc.name_cluster(cluster.id, "Rose ")
+    assert db.get_face_cluster(cluster.id).label == "Rose"
+
+
+def test_merge_clusters_rejects_cross_batch(db, tmp_path):
+    batch_a, _ = _batch_with_photos(db, tmp_path, 1)
+    batch_b = Batch(name="Other batch")
+    db.create_batch(batch_b)
+    from photopipe.models import FaceCluster
+    keep = FaceCluster(batch_id=batch_a.id)
+    other = FaceCluster(batch_id=batch_b.id)
+    db.create_face_cluster(keep)
+    db.create_face_cluster(other)
+    svc = FaceService(db, backend=MagicMock(), crop_root=tmp_path / "crops")
+    with pytest.raises(ValueError):
+        svc.merge_clusters([keep.id, other.id])
+
+
+def test_merge_clusters_duplicate_keep_id_is_safe(db, tmp_path):
+    batch, _ = _batch_with_photos(db, tmp_path, 1)
+    from photopipe.models import FaceCluster
+    keep = FaceCluster(batch_id=batch.id, label="Rose")
+    db.create_face_cluster(keep)
+    svc = FaceService(db, backend=MagicMock(), crop_root=tmp_path / "crops")
+    svc.merge_clusters([keep.id, keep.id])
+    assert db.get_face_cluster(keep.id) is not None

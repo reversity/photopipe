@@ -22,6 +22,7 @@ st.set_page_config(
 def setup_wizard():
     """Render the setup wizard."""
     st.title("⚙️ PhotoPipe Setup")
+    st.caption("One-time configuration before you start the workflow (Capture → Buckets → Batch Setup → Curate → Faces → Finalize): API key for AI dating, plus defaults pre-filled into new batches.")
 
     settings = load_settings()
 

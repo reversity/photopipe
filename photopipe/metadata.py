@@ -7,6 +7,7 @@ Handles writing EXIF, IPTC, and XMP metadata to image files.
 import json
 import subprocess
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -15,8 +16,9 @@ from photopipe.models import PhotoPair, Batch, Location
 from photopipe.geocoding import parse_location_components
 
 
+@lru_cache(maxsize=1)
 def get_exiftool_path() -> Optional[str]:
-    """Find the exiftool executable."""
+    """Find the exiftool executable (cached — probing spawns a subprocess)."""
     # Try common locations
     paths_to_try = [
         "exiftool",  # In PATH
@@ -96,6 +98,18 @@ def format_iptc_date(d: date) -> str:
     return f"{d.year}:{d.month:02d}:{d.day:02d}"
 
 
+def _timezone_offset(d: date, timezone_name: str) -> Optional[str]:
+    """UTC offset ("-05:00") of the configured timezone on the photo's date."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        dt = datetime(d.year, d.month, d.day, 12, tzinfo=ZoneInfo(timezone_name))
+        raw = dt.strftime("%z")  # e.g. "-0500"
+        return f"{raw[:3]}:{raw[3:]}" if raw else None
+    except Exception:
+        return None
+
+
 def format_gps_coordinate(value: float, is_latitude: bool) -> tuple[str, str]:
     """
     Format GPS coordinate for EXIF.
@@ -148,6 +162,14 @@ def build_exiftool_args(
             f"-CreateDate={exif_date}",
             f"-ModifyDate={exif_date}",
         ])
+
+        # Timezone offset for the configured default timezone
+        offset = _timezone_offset(photo_date, config.metadata.default_timezone)
+        if offset:
+            args.extend([
+                f"-OffsetTimeOriginal={offset}",
+                f"-OffsetTimeDigitized={offset}",
+            ])
 
         # IPTC date
         args.append(f"-IPTC:DateCreated={iptc_date}")

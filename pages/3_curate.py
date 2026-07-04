@@ -35,7 +35,7 @@ def main():
         return
 
     names = [b.name for b in batches]
-    chosen = st.selectbox("Batch", names)
+    chosen = st.selectbox("Batch", names, help="Only batches with photos not yet finalized are listed. Finished batches live on the Finalize page.")
     batch = next(b for b in batches if b.name == chosen)
     photos = db.get_photos_by_batch(batch.id)
 
@@ -47,22 +47,23 @@ def main():
             st.metric("Photos", len(photos))
             st.metric("Already dated", sum(1 for p in photos if p.extracted_date))
         with col2:
-            images_per_call = st.slider("Photos per AI call", 5, 20, 12)
+            images_per_call = st.slider("Photos per AI call", 5, 20, 12, help="How many photos are sent to the AI in each request. More per call gives the AI more context (photos scanned together often belong together), but each call takes longer.")
             st.caption(
                 "Runs in realtime (synchronous). Batch API mode "
                 "(async, 50% cheaper) is a planned follow-up."
             )
 
-        if st.button("🤖 Run AI Dating", type="primary"):
+        if st.button("🤖 Run AI Dating", type="primary", help="Sends photos without dates to the AI to estimate when each was taken. Uses your Anthropic API key, so each run costs a small amount."):
             undated = [p for p in photos if not p.extracted_date]
             with st.spinner(f"Analyzing {len(undated)} photos..."):
                 result = run_ai_dating(batch, undated, images_per_call=images_per_call)
-                st.session_state.ai_run_result = result
+                st.session_state.ai_run_result = {"batch_id": batch.id, "result": result}
             st.success(f"Analyzed {len(undated)} photos in {len(result.raw_responses)} call(s)")
             st.rerun()
 
-        # Show AI results
-        ai = st.session_state.ai_run_result
+        # Show AI results (only if they belong to the selected batch)
+        stored = st.session_state.ai_run_result
+        ai = stored["result"] if stored and stored.get("batch_id") == batch.id else None
         if ai:
             st.markdown("### Results")
             st.write("**Coherence:**", ai.coherence.get("summary", ""))
@@ -70,7 +71,7 @@ def main():
                 st.warning(f"AI detected {len(ai.coherence['segment_breaks'])} segment break(s)")
                 for sb in ai.coherence["segment_breaks"]:
                     st.write(f"- After photo {sb['after_photo_index']}: {sb['reason']}")
-            if st.button("✅ Apply AI dates"):
+            if st.button("✅ Apply AI dates", help="Saves the AI's estimated dates onto the photos — nothing is applied until you click this. Photos that already have a date (e.g. from the back of the print) are left alone."):
                 applied = apply_ai_results(batch, ai, photos, db=db)
                 st.success(f"Updated {applied.updated} photos (skipped {applied.skipped})")
                 st.session_state.ai_run_result = None

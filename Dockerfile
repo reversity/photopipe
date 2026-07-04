@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libimage-exiftool-perl \
     libgl1 \
     libglib2.0-0 \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -39,8 +40,8 @@ ENV PHOTOPIPE_DATA_DIR=/data
 # Expose Streamlit port
 EXPOSE 8501
 
-# Health check
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# Health check (python:3.12-slim ships no curl)
+HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" || exit 1
 
 # Run the app
 CMD ["streamlit", "run", "app.py", "--server.address", "0.0.0.0"]

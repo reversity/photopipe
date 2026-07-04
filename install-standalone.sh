@@ -84,7 +84,8 @@ for cmd in python3.12 python3.11 python3; do
 done
 
 if [[ -z "$PYTHON_CMD" ]]; then
-    PYTHON_CMD="/opt/homebrew/bin/python3.12"
+    # brew prefix differs by architecture: /opt/homebrew (Apple Silicon) vs /usr/local (Intel)
+    PYTHON_CMD="$(brew --prefix)/bin/python3.12"
 fi
 
 $PYTHON_CMD -m venv .venv
@@ -94,7 +95,8 @@ source .venv/bin/activate
 echo ""
 echo "Installing Python dependencies..."
 pip install --upgrade pip -q
-CFLAGS="-I/opt/homebrew/include" LDFLAGS="-L/opt/homebrew/lib" pip install -e . -q
+BREW_PREFIX="$(brew --prefix)"
+CFLAGS="-I${BREW_PREFIX}/include" LDFLAGS="-L${BREW_PREFIX}/lib" pip install -e . -q
 
 # Create data directories
 echo ""

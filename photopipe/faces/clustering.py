@@ -13,6 +13,7 @@ EMBEDDING_DIM = 512
 def cluster_embeddings(
     embeddings: list[list[float]],
     min_cluster_size: int = 3,
+    min_samples: int = 2,
 ) -> list[int]:
     """Cluster L2-normalized face embeddings.
 
@@ -38,6 +39,10 @@ def cluster_embeddings(
     matrix = np.asarray(embeddings, dtype=np.float64)
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
+        # HDBSCAN defaults min_samples to min_cluster_size, which is too
+        # conservative on 512-d ArcFace embeddings and dumps real faces
+        # into noise; a low fixed value groups markedly better.
+        min_samples=min_samples,
         metric="euclidean",  # inputs are L2-normalized, so euclidean ~ cosine
     )
     labels = clusterer.fit_predict(matrix)

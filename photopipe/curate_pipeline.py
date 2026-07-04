@@ -153,9 +153,11 @@ def run_ai_dating(
     all_coherences: list[dict] = []
     raw: list[dict] = []
 
+    # User hint text must never go through str.format — braces in an event
+    # description ("Bob's {surprise} party") would raise KeyError.
     hints = _batch_hint_prefix(batch)
+    hint_prefix = f"{hints}\n\n" if hints else ""
     per_call_template = (
-        f"{hints}\n\n"
         "Estimate per-photo date and location for these {n} photos. "
         "Photo indices are 0-based and match the image order."
     )
@@ -166,7 +168,7 @@ def run_ai_dating(
         result = vlm.analyze(
             cached_prefix=CURATE_PROMPT_PREFIX,
             images=images,
-            per_call_prompt=per_call_template.format(n=len(chunk)),
+            per_call_prompt=hint_prefix + per_call_template.format(n=len(chunk)),
             response_schema=RESPONSE_SCHEMA,
             max_tokens=4096,
         )

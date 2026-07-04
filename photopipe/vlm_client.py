@@ -20,9 +20,9 @@ from photopipe.config import get_config
 
 def is_vlm_available() -> bool:
     """True iff a Claude API key is configured and the SDK is importable."""
-    import os
     cfg = get_config()
-    if not os.environ.get(cfg.vlm.api_key_env_var):
+    # get_api_key checks the env var, then the setup-wizard settings file
+    if not cfg.get_api_key():
         return False
     try:
         import anthropic  # noqa: F401
@@ -87,7 +87,8 @@ class VLMClient:
         model: Optional[str] = None,
     ):
         cfg = get_config()
-        self.api_key = api_key or os.environ.get(cfg.vlm.api_key_env_var)
+        # env var first, then the key stored by the in-app setup wizard
+        self.api_key = api_key or cfg.get_api_key()
         self.model = model or cfg.vlm.model
         self.cache_ttl = cfg.vlm.cache_ttl
         self._anthropic_client: Any = None

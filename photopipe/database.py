@@ -269,20 +269,34 @@ class Database:
         return batch
 
     def delete_batch(self, batch_id: str) -> bool:
-        """Delete a batch and all associated photos."""
+        """Delete a batch and all associated rows (photos, logs, faces,
+        clusters, AI jobs, bucket back-references)."""
         with self.connection() as conn:
-            # Delete associated photos first
             conn.execute("DELETE FROM photos WHERE batch_id = ?", (batch_id,))
-            # Delete processing logs
             conn.execute("DELETE FROM processing_log WHERE batch_id = ?", (batch_id,))
-            # Delete batch
+            # Face data and AI jobs would otherwise orphan (FK enforcement is off)
+            conn.execute("DELETE FROM faces WHERE batch_id = ?", (batch_id,))
+            conn.execute("DELETE FROM face_clusters WHERE batch_id = ?", (batch_id,))
+            self._delete_if_table_exists(conn, "ai_jobs", "batch_id", batch_id)
+            # Detach any bucket that pointed at this batch
+            conn.execute(
+                "UPDATE buckets SET batch_id = NULL WHERE batch_id = ?", (batch_id,)
+            )
             result = conn.execute("DELETE FROM batches WHERE id = ?", (batch_id,))
             return result.rowcount > 0
+
+    @staticmethod
+    def _delete_if_table_exists(conn, table: str, column: str, value: str) -> None:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if exists:
+            conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (value,))
 
     def _row_to_batch(self, row: sqlite3.Row) -> Batch:
         """Convert database row to Batch object."""
         location = None
-        if row["location_lat"] and row["location_lon"]:
+        if row["location_lat"] is not None and row["location_lon"] is not None:
             location = Location(
                 description=row["location_description"] or "",
                 latitude=row["location_lat"],
@@ -469,9 +483,10 @@ class Database:
         return photo
 
     def delete_photo(self, photo_id: str) -> bool:
-        """Delete a photo record."""
+        """Delete a photo record and its dependent rows."""
         with self.connection() as conn:
             conn.execute("DELETE FROM processing_log WHERE photo_id = ?", (photo_id,))
+            conn.execute("DELETE FROM faces WHERE photo_id = ?", (photo_id,))
             result = conn.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
             return result.rowcount > 0
 
@@ -519,7 +534,7 @@ class Database:
     def _row_to_photo(self, row: sqlite3.Row) -> PhotoPair:
         """Convert database row to PhotoPair object."""
         final_location = None
-        if row["final_location_lat"] and row["final_location_lon"]:
+        if row["final_location_lat"] is not None and row["final_location_lon"] is not None:
             final_location = Location(
                 description=row["final_location_description"] or "",
                 latitude=row["final_location_lat"],
@@ -724,12 +739,13 @@ class Database:
         with self.connection() as conn:
             conn.execute(
                 """
-                INSERT INTO face_clusters(id, batch_id, label,
+                INSERT INTO face_clusters(id, batch_id, label, propagated_label,
                                           representative_face_id, is_noise, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cluster.id, cluster.batch_id, cluster.label,
+                    cluster.propagated_label,
                     cluster.representative_face_id, int(cluster.is_noise),
                     cluster.created_at.isoformat(),
                 ),
@@ -754,9 +770,10 @@ class Database:
     def update_face_cluster(self, cluster: FaceCluster) -> None:
         with self.connection() as conn:
             conn.execute(
-                """UPDATE face_clusters SET label = ?, representative_face_id = ?,
-                   is_noise = ? WHERE id = ?""",
-                (cluster.label, cluster.representative_face_id,
+                """UPDATE face_clusters SET label = ?, propagated_label = ?,
+                   representative_face_id = ?, is_noise = ? WHERE id = ?""",
+                (cluster.label, cluster.propagated_label,
+                 cluster.representative_face_id,
                  int(cluster.is_noise), cluster.id),
             )
 
@@ -769,8 +786,10 @@ class Database:
             conn.execute("DELETE FROM face_clusters WHERE id = ?", (cluster_id,))
 
     def _row_to_face_cluster(self, row) -> FaceCluster:
+        keys = row.keys()
         return FaceCluster(
             id=row["id"], batch_id=row["batch_id"], label=row["label"],
+            propagated_label=row["propagated_label"] if "propagated_label" in keys else None,
             representative_face_id=row["representative_face_id"],
             is_noise=bool(row["is_noise"]),
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -821,7 +840,7 @@ class Database:
     def _row_to_template(self, row: sqlite3.Row) -> BatchTemplate:
         """Convert database row to BatchTemplate object."""
         location = None
-        if row["location_lat"] and row["location_lon"]:
+        if row["location_lat"] is not None and row["location_lon"] is not None:
             location = Location(
                 description=row["location_description"] or "",
                 latitude=row["location_lat"],

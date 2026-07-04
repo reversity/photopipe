@@ -88,6 +88,7 @@ class OutputConfig(BaseModel):
     preserve_originals: bool = True
     generate_web_copies: bool = False
     web_copy_max_dimension: int = 2048
+    export_backs: bool = False  # export back images alongside fronts at finalize
 
 
 class UIConfig(BaseModel):

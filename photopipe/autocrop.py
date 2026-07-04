@@ -13,9 +13,29 @@ import base64
 import io
 import os
 import json
+import re
+import shutil
 from pathlib import Path
 from PIL import Image
 from typing import Optional, Tuple
+
+
+def _read_exif_bytes(path: Path) -> Optional[bytes]:
+    """Read the raw EXIF block from an image so a re-save can preserve it."""
+    try:
+        with Image.open(path) as img:
+            return img.info.get("exif")
+    except Exception:
+        return None
+
+
+def _save_bgr_jpeg(image: np.ndarray, output_path: Path, exif: Optional[bytes]) -> None:
+    """Save an OpenCV BGR array as JPEG, carrying over the source EXIF."""
+    pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    if exif:
+        pil_img.save(output_path, "JPEG", quality=95, exif=exif)
+    else:
+        pil_img.save(output_path, "JPEG", quality=95)
 
 
 def get_anthropic_api_key() -> Optional[str]:
@@ -354,8 +374,8 @@ def auto_crop_photo(input_path: Path, output_path: Optional[Path] = None) -> boo
             trim_y = (crop_h - new_h) // 2
             cropped = cropped[trim_y:trim_y+new_h, trim_x:trim_x+new_w]
 
-        # Save the cropped image
-        cv2.imwrite(str(output_path), cropped, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        # Save the cropped image, preserving the scan's EXIF metadata
+        _save_bgr_jpeg(cropped, output_path, _read_exif_bytes(input_path))
 
         return True
 
@@ -518,30 +538,23 @@ def rotate_photo(input_path: Path, degrees: int) -> bool:
         True if successful
     """
     try:
-        img = Image.open(input_path)
-        img = img.rotate(degrees, expand=True)
-        img.save(input_path, quality=95)
+        with Image.open(input_path) as img:
+            exif = img.info.get("exif")
+            rotated = img.rotate(degrees, expand=True)
+        if exif:
+            rotated.save(input_path, quality=95, exif=exif)
+        else:
+            rotated.save(input_path, quality=95)
         return True
     except Exception as e:
         print(f"Rotate error: {e}")
         return False
 
 
-ORIENTATION_PROMPT = """Look at this photo. Which edge of the image should be the TOP when correctly oriented?
+ORIENTATION_PROMPT = """Look at this photo. Which edge of the image currently contains what should be at the TOP when correctly oriented? (Clues: people's heads, sky or ceiling, the tops of buildings/trees, readable text.)
 
-Think step by step:
-1. If there are people, their heads should be at the top
-2. If there's sky or ceiling, it should be at the top
-3. If there are buildings or trees, they should grow upward
-4. If there's text, it should be readable right-side up
-
-Which edge currently contains what should be at the TOP of the image?
-
-Answer with exactly ONE word:
-- TOP (image is already correct - the top edge should stay on top)
-- BOTTOM (image is upside down - the bottom edge should be on top)
-- LEFT (image needs to rotate - the left edge should be on top)
-- RIGHT (image needs to rotate - the right edge should be on top)"""
+Reply with exactly one word and nothing else:
+TOP (already correct) | BOTTOM (upside down) | LEFT (left edge should be on top) | RIGHT (right edge should be on top)"""
 
 
 def detect_orientation_with_ai(image_path: Path) -> int:
@@ -592,10 +605,12 @@ def detect_orientation_with_ai(image_path: Path) -> int:
         image_base64 = base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
 
         # Call Claude
+        from photopipe.config import get_config
+
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=100,  # Give room to think
+            model=get_config().vlm.model,
+            max_tokens=10,
             messages=[
                 {
                     "role": "user",
@@ -621,22 +636,24 @@ def detect_orientation_with_ai(image_path: Path) -> int:
         print(f"AI orientation detection for {image_path.name}: {result}")
 
         # Parse the response - which edge should be TOP?
-        # PIL rotate() rotates counter-clockwise by default
-        # We need to rotate so the named edge becomes the new top
+        # Match whole words and take the LAST one, so any preamble that
+        # happens to mention an edge word can't shadow the actual answer.
+        # PIL rotate() rotates counter-clockwise by default; we rotate so
+        # the named edge becomes the new top.
+        words = re.findall(r"\b(TOP|BOTTOM|LEFT|RIGHT)\b", result)
+        answer = words[-1] if words else None
 
-        if "TOP" in result:
+        if answer == "TOP":
             # Already correct
             return 0
-        elif "BOTTOM" in result:
+        elif answer == "BOTTOM":
             # Upside down - rotate 180
             return 180
-        elif "LEFT" in result:
-            # Left edge should become top - rotate clockwise 90°
-            # PIL: clockwise = negative degrees
+        elif answer == "LEFT":
+            # Left edge should become top - rotate clockwise (PIL: negative)
             return -90
-        elif "RIGHT" in result:
-            # Right edge should become top - rotate counter-clockwise 90°
-            # PIL: counter-clockwise = positive degrees
+        elif answer == "RIGHT":
+            # Right edge should become top - rotate counter-clockwise (PIL: positive)
             return 90
         else:
             print(f"Unexpected orientation response: {result}")
@@ -725,16 +742,20 @@ def process_scanned_photo(input_path: Path, output_path: Optional[Path] = None, 
         # Step 1: Auto-crop to photo region
         results["cropped"] = auto_crop_photo(input_path, output_path)
 
-        # Step 2: Auto-orient using AI (use output_path since it may have been cropped)
+        # When a distinct output path was requested but cropping found nothing,
+        # copy the source over so later steps operate on the output and the
+        # original is never modified.
+        if output_path != input_path and not results["cropped"]:
+            shutil.copy2(input_path, output_path)
+
+        # Step 2: Auto-orient using AI (always on output_path — see above)
         if use_ai_orientation:
-            target_path = output_path if results["cropped"] else input_path
-            rotation = auto_orient_photo(target_path)
+            rotation = auto_orient_photo(output_path)
             results["rotated"] = rotation != 0
             results["rotation_degrees"] = rotation
 
         # Step 3: Get ratio info for the final image
-        final_path = output_path if output_path.exists() else input_path
-        results["ratio_info"] = get_photo_ratio_info(final_path)
+        results["ratio_info"] = get_photo_ratio_info(output_path)
 
     except Exception as e:
         results["error"] = str(e)
@@ -798,9 +819,11 @@ Answer with ONLY the word "first" or "second" - nothing else."""
         image_a_base64 = prepare_image(image_a_path)
         image_b_base64 = prepare_image(image_b_path)
 
+        from photopipe.config import get_config
+
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=get_config().vlm.model,
             max_tokens=10,
             messages=[
                 {

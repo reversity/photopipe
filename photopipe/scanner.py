@@ -189,6 +189,7 @@ class Scanner:
         duplex: bool = True,
         mode: str = "color",
         progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+        error_sink: Optional[list[str]] = None,
     ) -> list[ScanResult]:
         """
         Scan a batch of photos using the ADF (Automatic Document Feeder).
@@ -201,6 +202,10 @@ class Scanner:
             duplex: Enable duplex (front and back) scanning
             mode: Color mode (color, gray, lineart)
             progress_callback: Optional callback(count, total) for progress updates
+            error_sink: When provided, partial-scan failures (jam, timeout)
+                append a message here and the files scanned before the failure
+                are still returned, so callers can persist them. Without it,
+                failures raise even when partial results exist.
 
         Returns:
             List of ScanResult objects for each scanned photo
@@ -210,13 +215,23 @@ class Scanner:
         if self._use_python_sane:
             return self._scan_batch_python_sane(
                 output_folder, name_prefix, start_sequence,
-                resolution, duplex, mode, progress_callback
+                resolution, duplex, mode, progress_callback, error_sink
             )
         else:
             return self._scan_batch_scanimage(
                 output_folder, name_prefix, start_sequence,
-                resolution, duplex, mode, progress_callback
+                resolution, duplex, mode, progress_callback, error_sink
             )
+
+    @staticmethod
+    def _free_sequence(output_folder: Path, name_prefix: str, sequence: int) -> int:
+        """Advance past sequence numbers whose files already exist, so a scan
+        can never silently overwrite an earlier scan in the same folder."""
+        while (output_folder / f"{name_prefix}_{sequence:04d}.jpg").exists() or (
+            output_folder / f"{name_prefix}_{sequence:04d}_b.jpg"
+        ).exists():
+            sequence += 1
+        return sequence
 
     def _scan_batch_python_sane(
         self,
@@ -227,12 +242,13 @@ class Scanner:
         duplex: bool,
         mode: str,
         progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        error_sink: Optional[list[str]] = None,
     ) -> list[ScanResult]:
         """Scan using python-sane library."""
         import sane
 
         results = []
-        sequence = start_sequence
+        sequence = self._free_sequence(output_folder, name_prefix, start_sequence)
 
         try:
             sane.init()
@@ -269,6 +285,7 @@ class Scanner:
 
                     # Scan front
                     front_image = device.snap()
+                    sequence = self._free_sequence(output_folder, name_prefix, sequence)
                     front_path = output_folder / f"{name_prefix}_{sequence:04d}.jpg"
                     front_image.save(str(front_path), "JPEG", quality=95)
 
@@ -304,6 +321,11 @@ class Scanner:
                 sane.exit()
             except Exception:
                 pass
+            if error_sink is not None and results:
+                error_sink.append(
+                    f"Scanning failed after {len(results)} photos: {e}"
+                )
+                return results
             raise RuntimeError(f"Scanning failed: {e}")
 
         return results
@@ -317,19 +339,19 @@ class Scanner:
         duplex: bool,
         mode: str,
         progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        error_sink: Optional[list[str]] = None,
     ) -> list[ScanResult]:
         """Scan using scanimage command-line tool."""
         results = []
-        sequence = start_sequence
+        sequence = self._free_sequence(output_folder, name_prefix, start_sequence)
 
-        # Build base scanimage command
+        # Build base scanimage command (--batch=pattern is appended below)
         base_cmd = [
             "scanimage",
             "-d", self.device_name,
             "--resolution", str(resolution),
             "--mode", mode,
             "--format", "jpeg",
-            "--batch",
             "--source", "ADF Duplex" if duplex else "ADF Front",
         ]
 
@@ -369,6 +391,7 @@ class Scanner:
 
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.communicate()
                 scan_error = "Scanning timed out"
 
             # Ensure output folder exists
@@ -383,6 +406,7 @@ class Scanner:
                     front_temp = scanned_files[i]
                     back_temp = scanned_files[i + 1] if i + 1 < len(scanned_files) else None
 
+                    sequence = self._free_sequence(output_folder, name_prefix, sequence)
                     front_path = output_folder / f"{name_prefix}_{sequence:04d}.jpg"
                     shutil.copy2(front_temp, front_path)
 
@@ -405,6 +429,7 @@ class Scanner:
             else:
                 # Single-sided scanning
                 for scan_file in scanned_files:
+                    sequence = self._free_sequence(output_folder, name_prefix, sequence)
                     front_path = output_folder / f"{name_prefix}_{sequence:04d}.jpg"
                     shutil.copy2(scan_file, front_path)
 
@@ -420,10 +445,16 @@ class Scanner:
 
                     sequence += 1
 
-            # If there was a scan error but we got some files, report both
+            # If there was a scan error but we got some files, report both.
+            # With an error_sink the partial results are returned so the
+            # caller can persist them; without one we preserve the old
+            # raising behavior.
             if scan_error and results:
-                # Raise a special error that includes the count of successful scans
-                raise RuntimeError(f"{scan_error} (saved {len(results)} photos before error)")
+                msg = f"{scan_error} (saved {len(results)} photos before error)"
+                if error_sink is not None:
+                    error_sink.append(msg)
+                else:
+                    raise RuntimeError(msg)
             elif scan_error and not results:
                 raise RuntimeError(scan_error)
 

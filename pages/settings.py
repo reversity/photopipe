@@ -82,6 +82,8 @@ def path_settings():
         )
 
         if st.form_submit_button("Save Path Settings"):
+            old_database_path = config.paths.database
+
             config.paths.input_folder = Path(input_folder).expanduser()
             config.paths.output_folder = Path(output_folder).expanduser()
             config.paths.archive_folder = Path(archive_folder).expanduser()
@@ -89,6 +91,11 @@ def path_settings():
 
             save_config(config)
             config.ensure_directories()
+
+            if config.paths.database != old_database_path:
+                st.session_state.db = Database()
+                st.info("Database path changed — reconnected to the new database.")
+
             st.success("✅ Path settings saved!")
 
 
@@ -177,9 +184,10 @@ def handwriting_ocr_settings():
         )
 
         use_batch_api = st.checkbox(
-            "Use Batch API",
+            "Use Batch API (not yet implemented)",
             value=config.handwriting_ocr.use_batch_api,
-            help="Submit OCR work via the Batch API where supported.",
+            help="Reserved for a future release — OCR currently always runs "
+                 "synchronously per photo, regardless of this setting.",
         )
 
         if st.form_submit_button("Save Handwriting OCR Settings"):
@@ -199,15 +207,19 @@ def vlm_settings():
 
     config = get_config()
 
-    # API key status
-    api_key = os.environ.get(config.vlm.api_key_env_var)
-    if api_key:
+    # API key status: env var first, then the key stored by the setup wizard
+    env_key = os.environ.get(config.vlm.api_key_env_var)
+    api_key = config.get_api_key()
+    if env_key:
         st.success(f"✅ API key found in environment ({config.vlm.api_key_env_var})")
+        st.caption(f"Key: {env_key[:8]}...{env_key[-4:]}")
+    elif api_key:
+        st.success("✅ API key found in PhotoPipe settings (saved by the Setup wizard)")
         st.caption(f"Key: {api_key[:8]}...{api_key[-4:]}")
     else:
-        st.warning(f"⚠️ No API key found in {config.vlm.api_key_env_var}")
+        st.warning(f"⚠️ No API key found in {config.vlm.api_key_env_var} or PhotoPipe settings")
         st.info("""
-        To enable the Claude VLM, set your Anthropic API key:
+        To enable the Claude VLM, enter your key on the **Setup** page, or set it in your shell:
         ```bash
         export ANTHROPIC_API_KEY='your-key-here'
         ```
@@ -245,10 +257,11 @@ def vlm_settings():
         )
 
         batch_api_threshold = st.number_input(
-            "Batch API Threshold",
+            "Batch API Threshold (not yet implemented)",
             min_value=1,
             value=config.vlm.batch_api_threshold,
-            help="Use the Batch API when a job has at least this many photos.",
+            help="Reserved for a future release — AI dating currently always "
+                 "runs synchronously, regardless of this setting.",
         )
 
         if st.form_submit_button("Save Claude VLM Settings"):
@@ -373,12 +386,20 @@ def database_management():
 
         st.write("")
 
-        if st.button("🗑️ Clear All Data", type="secondary"):
+        if st.session_state.get("confirm_clear"):
             st.warning("⚠️ This will delete ALL batches and photos!")
-            if st.button("Yes, I'm sure", key="confirm_clear"):
+            if st.button("Yes, I'm sure", key="confirm_clear_yes"):
                 for batch in batches:
                     db.delete_batch(batch.id)
+                st.session_state.confirm_clear = False
                 st.success("All data cleared!")
+                st.rerun()
+            if st.button("Cancel", key="confirm_clear_cancel"):
+                st.session_state.confirm_clear = False
+                st.rerun()
+        else:
+            if st.button("🗑️ Clear All Data", type="secondary"):
+                st.session_state.confirm_clear = True
                 st.rerun()
 
 
@@ -392,15 +413,14 @@ def export_import_config():
 
     with col1:
         st.write("**Export Configuration**")
-        if st.button("Download config.yaml"):
-            import yaml
-            config_yaml = yaml.dump(config.model_dump(), default_flow_style=False)
-            st.download_button(
-                label="📥 Download",
-                data=config_yaml,
-                file_name="photopipe_config.yaml",
-                mime="text/yaml",
-            )
+        import yaml
+        config_yaml = yaml.dump(config.model_dump(mode="json"), default_flow_style=False)
+        st.download_button(
+            label="📥 Download config.yaml",
+            data=config_yaml,
+            file_name="photopipe_config.yaml",
+            mime="text/yaml",
+        )
 
     with col2:
         st.write("**Import Configuration**")

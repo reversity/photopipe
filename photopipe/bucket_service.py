@@ -86,6 +86,11 @@ class BucketService:
         bucket = self.db.get_bucket(bucket_id)
         if bucket is None:
             raise ValueError(f"Bucket {bucket_id} not found")
+        if bucket.status == BucketStatus.CONVERTED:
+            raise ValueError(
+                f"Bucket {bucket_id} was already converted to batch {bucket.batch_id}; "
+                "converting again would re-parent its photos away from that batch"
+            )
 
         batch = Batch(
             name=name,

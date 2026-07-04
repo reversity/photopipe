@@ -184,16 +184,31 @@ class FaceService:
         if len(cluster_ids) < 2:
             return
         keep_id, *merge_ids = cluster_ids
-        merge_set = set(merge_ids)
-        for face in self.db.get_faces_by_batch(
-            self._batch_id_for_cluster(keep_id)
-        ):
+        keep = self.db.get_face_cluster(keep_id)
+        if keep is None:
+            raise ValueError(f"face cluster {keep_id} not found")
+        # Guard against a duplicated keep_id in the tail (would delete the
+        # kept cluster) and against merging across batches (would orphan
+        # the other batch's faces).
+        merge_set = {cid for cid in merge_ids if cid != keep_id}
+        for cid in merge_set:
+            other = self.db.get_face_cluster(cid)
+            if other is not None and other.batch_id != keep.batch_id:
+                raise ValueError(
+                    f"cannot merge cluster {cid} from batch {other.batch_id} "
+                    f"into cluster {keep_id} from batch {keep.batch_id}"
+                )
+        for face in self.db.get_faces_by_batch(keep.batch_id):
             if face.cluster_id in merge_set:
                 face.cluster_id = keep_id
                 self.db.update_face(face)
-        for cid in merge_ids:
+        for cid in merge_set:
             cluster = self.db.get_face_cluster(cid)
             if cluster:
+                # A named cluster merged into an unnamed keeper donates its label.
+                if cluster.label and not keep.label:
+                    keep.label = cluster.label
+                    self.db.update_face_cluster(keep)
                 self.db.delete_face_cluster(cid)
 
     def move_face(self, face_id: str, target_cluster_id: str) -> None:
@@ -214,38 +229,51 @@ class FaceService:
         return cluster.batch_id
 
     def propagate_labels(self, batch: Batch) -> PropagateResult:
-        """Add each named, non-noise cluster's label to its photos' keywords.
+        """Sync each cluster's label into its photos' keywords.
 
-        Idempotent: a keyword already present is not duplicated.
+        Idempotent, and rename-aware: each cluster remembers the label it
+        last propagated (``propagated_label``); when the label has changed
+        since, the stale keyword is removed from the cluster's photos
+        before the current one is added.
         """
-        clusters = {
-            c.id: c
-            for c in self.db.get_face_clusters_by_batch(batch.id)
-            if c.label
-        }
+        all_clusters = self.db.get_face_clusters_by_batch(batch.id)
+        clusters = {c.id: c for c in all_clusters if c.label or c.propagated_label}
         if not clusters:
             return PropagateResult(photos_tagged=0, names_applied=0)
 
-        # photo_id -> set of names to add
+        # photo_id -> (names to add, stale names to remove)
         additions: dict[str, set[str]] = {}
+        removals: dict[str, set[str]] = {}
         for face in self.db.get_faces_by_batch(batch.id):
             cluster = clusters.get(face.cluster_id)
-            if cluster:
+            if cluster is None:
+                continue
+            if cluster.label:
                 additions.setdefault(face.photo_id, set()).add(cluster.label)
+            if cluster.propagated_label and cluster.propagated_label != cluster.label:
+                removals.setdefault(face.photo_id, set()).add(cluster.propagated_label)
 
         tagged = 0
-        for photo_id, names in additions.items():
+        for photo_id in additions.keys() | removals.keys():
             photo = self.db.get_photo(photo_id)
             if photo is None:
                 continue
             existing = list(photo.final_keywords)
-            merged = existing + [n for n in sorted(names) if n not in existing]
+            stale = removals.get(photo_id, set())
+            names = additions.get(photo_id, set())
+            merged = [k for k in existing if k not in stale or k in names]
+            merged += [n for n in sorted(names) if n not in merged]
             if merged != existing:
                 photo.final_keywords = merged
                 self.db.update_photo(photo)
                 tagged += 1
 
+        for cluster in clusters.values():
+            if cluster.propagated_label != cluster.label:
+                cluster.propagated_label = cluster.label
+                self.db.update_face_cluster(cluster)
+
         return PropagateResult(
             photos_tagged=tagged,
-            names_applied=len({c.label for c in clusters.values()}),
+            names_applied=len({c.label for c in clusters.values() if c.label}),
         )

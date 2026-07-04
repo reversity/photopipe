@@ -17,6 +17,11 @@ from photopipe.file_manager import (
 from photopipe.metadata import check_exiftool_installed
 
 
+def _osa_quote(s: str) -> str:
+    """Escape a string for safe interpolation into an AppleScript literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def get_photos_albums() -> list[str]:
     """Get list of existing album names from Photos app."""
     script = '''
@@ -64,7 +69,8 @@ def import_to_photos_with_albums(
     """
     # Build the AppleScript
     # First, import all photos and get their IDs
-    photo_list = ", ".join([f'POSIX file "{p}"' for p in photo_paths])
+    photo_list = ", ".join([f'POSIX file "{_osa_quote(p)}"' for p in photo_paths])
+    main_album_q = _osa_quote(main_album)
 
     script = f'''
     tell application "Photos"
@@ -76,9 +82,9 @@ def import_to_photos_with_albums(
         -- Ensure PhotoPipe album exists
         set photoPipeAlbum to missing value
         try
-            set photoPipeAlbum to album "{main_album}"
+            set photoPipeAlbum to album "{main_album_q}"
         on error
-            set photoPipeAlbum to make new album named "{main_album}"
+            set photoPipeAlbum to make new album named "{main_album_q}"
         end try
 
         -- Add to PhotoPipe album
@@ -87,14 +93,15 @@ def import_to_photos_with_albums(
 '''
 
     if additional_album:
+        additional_album_q = _osa_quote(additional_album)
         if create_additional:
             script += f'''
         -- Create additional album if needed
         set additionalAlbum to missing value
         try
-            set additionalAlbum to album "{additional_album}"
+            set additionalAlbum to album "{additional_album_q}"
         on error
-            set additionalAlbum to make new album named "{additional_album}"
+            set additionalAlbum to make new album named "{additional_album_q}"
         end try
 
         -- Add to additional album
@@ -104,7 +111,7 @@ def import_to_photos_with_albums(
             script += f'''
         -- Add to existing additional album
         try
-            set additionalAlbum to album "{additional_album}"
+            set additionalAlbum to album "{additional_album_q}"
             add importedItems to additionalAlbum
         end try
 '''
@@ -181,6 +188,7 @@ def batch_selector():
     selected_name = st.selectbox(
         "Select Batch to Finalize",
         options=list(batch_options.keys()),
+        help="Only batches that contain photos are listed. Check the summary below before finalizing — the written metadata comes from the batch's dates, location, and people.",
     )
 
     st.session_state.current_batch_id = batch_options[selected_name]
@@ -283,6 +291,7 @@ def output_preview(batch: Batch):
     preserve = st.checkbox(
         "Keep original files in archive (including backs)",
         value=config.output.preserve_originals,
+        help="Keeps untouched copies of the original scans (fronts and backs) in the _archive folder. Uncheck to save disk space — but you lose the unmodified originals.",
     )
 
     return preserve
@@ -318,7 +327,8 @@ def show_photos_import_ui(batch: Batch, photos_in_folder: list[Path], key_suffix
             "new": "Create new album"
         }[x],
         horizontal=True,
-        key=f"album_choice_{key_suffix}"
+        key=f"album_choice_{key_suffix}",
+        help="Photos always go into the 'PhotoPipe' album so you can find everything imported by this app. This optionally adds the same photos to a second album, e.g. one per batch.",
     )
 
     additional_album = None
@@ -348,7 +358,7 @@ def show_photos_import_ui(batch: Batch, photos_in_folder: list[Path], key_suffix
     # Import button
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📱 Import to Photos", type="primary", use_container_width=True, key=f"do_import_{key_suffix}"):
+        if st.button("📱 Import to Photos", type="primary", use_container_width=True, key=f"do_import_{key_suffix}", help="Opens the macOS Photos app and imports the exported JPEGs into the selected album(s). Your original files in the output folder are not moved or changed."):
             photo_paths = [str(p) for p in photos_in_folder]
 
             with st.spinner(f"Importing {len(photo_paths)} photos to Photos app..."):
@@ -427,7 +437,7 @@ def show_finalize_success(batch: Batch, report):
         })
 
 
-def finalize_controls(batch: Batch, stats: dict):
+def finalize_controls(batch: Batch, stats: dict, preserve: bool):
     """Render finalize controls."""
     st.subheader("🚀 Finalize Batch")
 
@@ -480,6 +490,7 @@ def finalize_controls(batch: Batch, stats: dict):
         "✨ Finalize Batch",
         type="primary",
         disabled=st.session_state.finalizing,
+        help="Writes dates, location, and people into each photo's EXIF metadata and copies renamed files to the output folder. Marks the batch complete when done.",
     ):
         st.session_state.finalizing = True
 
@@ -491,14 +502,22 @@ def finalize_controls(batch: Batch, stats: dict):
             status_text.text(f"Finalizing photo {current} of {total}...")
 
         try:
-            with st.spinner("Finalizing batch..."):
-                report = finalize_batch(
-                    batch,
-                    db,
-                    auto_approve_high_confidence=auto_approve,
-                    finalize_all=finalize_all,
-                    progress_callback=update_progress,
-                )
+            # finalize_batch reads preserve_originals from the shared config
+            # singleton; apply the checkbox value for the duration of the call.
+            config = get_config()
+            saved_preserve = config.output.preserve_originals
+            config.output.preserve_originals = preserve
+            try:
+                with st.spinner("Finalizing batch..."):
+                    report = finalize_batch(
+                        batch,
+                        db,
+                        auto_approve_high_confidence=auto_approve,
+                        finalize_all=finalize_all,
+                        progress_callback=update_progress,
+                    )
+            finally:
+                config.output.preserve_originals = saved_preserve
 
             # Store in session state
             st.session_state.just_finalized_batch_id = batch.id
@@ -577,6 +596,7 @@ def main():
     init_session_state()
 
     st.title("✅ Finalize & Export")
+    st.caption("The last step of the workflow (Capture → Buckets → Batch Setup → Curate → Faces → Finalize): permanently write dates, location, and people into each photo's EXIF metadata and export the files.")
     st.write("Write metadata to photos and organize into output folders.")
 
     # Check for ExifTool
@@ -613,7 +633,7 @@ def main():
     st.markdown("---")
 
     # Finalize controls
-    finalize_controls(batch, stats)
+    finalize_controls(batch, stats, preserve)
 
     st.markdown("---")
 

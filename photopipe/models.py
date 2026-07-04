@@ -333,7 +333,7 @@ class Batch(BaseModel):
         if data.get("input_folder"):
             data["input_folder"] = Path(data["input_folder"])
         # Reconstruct location from lat/lon
-        if data.get("location_lat") and data.get("location_lon"):
+        if data.get("location_lat") is not None and data.get("location_lon") is not None:
             data["location"] = Location(
                 description=data.get("location_description", ""),
                 latitude=data["location_lat"],
@@ -444,6 +444,9 @@ class FaceCluster(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     batch_id: str
     label: Optional[str] = None
+    # The label as it was last written into photo keywords, so a rename
+    # followed by a re-apply can remove the stale keyword.
+    propagated_label: Optional[str] = None
     representative_face_id: Optional[str] = None
     is_noise: bool = False
     created_at: datetime = Field(default_factory=datetime.now)
