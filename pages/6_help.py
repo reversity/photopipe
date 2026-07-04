@@ -44,12 +44,20 @@ with st.expander("**Step 1 — First-run Setup**", expanded=False):
 with st.expander("**Step 2 — Capture: scan stacks into buckets**", expanded=False):
     st.markdown(
         """
-1. Load a stack of photos into the FastFoto's feeder (backs with handwriting
-   are read automatically when duplex scanning is on).
-2. On the **📥 Capture** page, type a bucket label that says where the stack
+1. On the **📥 Capture** page, type a bucket label that says where the stack
    came from — *"Grandma's blue album, page 3"* beats *"stack 1"*.
-3. Hit **Scan Stack**. Repeat for the next stack — either into the same bucket
-   or a new one.
+2. **Photograph the album cover or envelope** with the Mac's camera (the
+   "Photo of the album or envelope" section — albums don't fit through the
+   sheet feeder, so hold them up to the camera instead). Any handwriting or
+   sticky notes on the cover get read by the AI later, so this photo often
+   supplies the dates and event names by itself.
+3. Load a stack of photos into the FastFoto's feeder (backs with handwriting
+   are read automatically when duplex scanning is on) and hit **Scan Stack**.
+   Repeat for the next stack — either into the same bucket or a new one.
+
+**Owner tip:** before handing albums over, stick a Post-it on each cover
+with whatever you know — *"≈1987–89, lake trips"*. The helper photographs
+the cover, the AI reads your note, and the context arrives with the scans.
 
 **Handing the scanner to a family member?** Toggle **Helper Mode** in the
 home-page sidebar first: the app collapses to just the scan screen, so they
@@ -67,10 +75,16 @@ with st.expander("**Step 3 — Buckets → Batches: add what you know**", expand
     st.markdown(
         """
 1. On the **🗂 Buckets** page, review what the helpers scanned.
-2. Convert each bucket to a **batch**, adding everything you know about it:
-   approximate date range, location, people, event. Rough is fine — *"summer
+2. Click **✨ Suggest context** on a bucket: one AI pass reads the album-cover
+   photo (including your Post-its), rolls up the handwriting dates already
+   found on photo backs, and looks at a sample of photos from across the
+   whole bucket. It proposes a batch name, date range, locations, and a
+   **list of distinct events** (one album often holds several). The proposal
+   pre-fills the convert form — nothing is saved until you confirm.
+3. Convert the bucket to a **batch**, correcting or adding anything the AI
+   missed: date range, location, people, event. Rough is fine — *"summer
    1985, Lake Erie, the Kowalskis"* gives the AI a lot to work with.
-3. Batches can also be created directly on **📁 Batch Setup** (and edited
+4. Batches can also be created directly on **📁 Batch Setup** (and edited
    there later — dates are edited with proper date pickers, so nothing gets
    mangled).
 """

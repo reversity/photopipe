@@ -593,8 +593,9 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO buckets (
-                    id, label, helper_name, status, batch_id, created_at, closed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    id, label, helper_name, status, batch_id,
+                    context_image_path, suggested_context, created_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bucket.id,
@@ -602,6 +603,8 @@ class Database:
                     bucket.helper_name,
                     bucket.status,
                     bucket.batch_id,
+                    str(bucket.context_image_path) if bucket.context_image_path else None,
+                    json.dumps(bucket.suggested_context) if bucket.suggested_context else None,
                     bucket.created_at.isoformat(),
                     bucket.closed_at.isoformat() if bucket.closed_at else None,
                 ),
@@ -640,7 +643,8 @@ class Database:
             conn.execute(
                 """
                 UPDATE buckets SET
-                    label = ?, helper_name = ?, status = ?, batch_id = ?, closed_at = ?
+                    label = ?, helper_name = ?, status = ?, batch_id = ?,
+                    context_image_path = ?, suggested_context = ?, closed_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -648,6 +652,8 @@ class Database:
                     bucket.helper_name,
                     bucket.status,
                     bucket.batch_id,
+                    str(bucket.context_image_path) if bucket.context_image_path else None,
+                    json.dumps(bucket.suggested_context) if bucket.suggested_context else None,
                     bucket.closed_at.isoformat() if bucket.closed_at else None,
                     bucket.id,
                 ),
@@ -671,6 +677,12 @@ class Database:
             helper_name=row["helper_name"],
             status=BucketStatus(row["status"]) if row["status"] else BucketStatus.OPEN,
             batch_id=row["batch_id"],
+            context_image_path=Path(row["context_image_path"])
+            if "context_image_path" in row.keys() and row["context_image_path"]
+            else None,
+            suggested_context=json.loads(row["suggested_context"])
+            if "suggested_context" in row.keys() and row["suggested_context"]
+            else None,
             created_at=datetime.fromisoformat(row["created_at"])
             if row["created_at"]
             else datetime.now(),

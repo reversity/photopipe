@@ -400,6 +400,11 @@ class Bucket(BaseModel):
     helper_name: Optional[str] = None
     status: BucketStatus = BucketStatus.OPEN
     batch_id: Optional[str] = None
+    # Photo of the physical container (album cover / envelope), usually taken
+    # with the Mac's camera; often carries the owner's Post-it annotations.
+    context_image_path: Optional[Path] = None
+    # AI triage proposal (see bucket_triage.suggest_bucket_context).
+    suggested_context: Optional[dict] = None
     created_at: datetime = Field(default_factory=datetime.now)
     closed_at: Optional[datetime] = None
 

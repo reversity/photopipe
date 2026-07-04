@@ -130,11 +130,19 @@ the owner's account** — other macOS accounts use it through the browser:
 PhotoPipe has two modes:
 
 **Helper Mode** — for someone scanning photos who doesn't need to know
-anything about batches or metadata. Toggle from the owner sidebar, then
-hand off the running app. The helper:
+anything about batches or metadata. Toggle from the owner sidebar (or open
+`/?mode=helper`), then hand off the running app. The helper:
 1. Enters a bucket label ("Grandma's blue album, page 3")
 2. Optionally enters their name
-3. Hits "Scan Stack" — repeats until done
+3. Photographs the album cover/envelope with the Mac's camera (owners:
+   Post-it your albums with approximate years — the AI reads the notes)
+4. Hits "Scan Stack" — repeats until done
+
+When the owner reviews a bucket, **✨ Suggest context** runs one AI pass
+(cover photo + back-of-photo handwriting dates + a sample of photos from
+across the bucket) and pre-fills the convert-to-batch form with a proposed
+name, date range, locations, and a list of distinct events — albums often
+span several.
 
 **Owner Mode** — for you (the photo library owner):
 1. **Buckets page**: review what the helper(s) scanned, convert each

@@ -74,6 +74,43 @@ def _bucket_selection_screen(svc: BucketService) -> None:
         st.rerun()
 
 
+def _container_photo(bucket, db) -> None:
+    """Optional photo of the physical container via the Mac's camera.
+
+    Album covers and envelopes don't fit through the sheet feeder, but they
+    carry the best context there is (titles, dates, the owner's Post-it
+    notes) — so we capture them with the built-in camera instead.
+    """
+    have_photo = bucket.context_image_path and bucket.context_image_path.exists()
+    title = "📸 Photo of the album or envelope" + (" ✓" if have_photo else " (recommended)")
+    with st.expander(title, expanded=False):
+        if have_photo:
+            st.image(str(bucket.context_image_path), width=280)
+            st.caption("Got it. Retake below if it's blurry or cut off.")
+        else:
+            st.caption(
+                "Hold the album cover or envelope up to the camera — especially "
+                "any sticky notes or handwriting on it. PhotoPipe reads these "
+                "later to figure out dates and events."
+            )
+        snap = st.camera_input(
+            "Container photo",
+            key=f"container_cam_{bucket.id}",
+            label_visibility="collapsed",
+        )
+        if snap is not None:
+            dest_dir = get_config().paths.archive_folder / "_bucket_context"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / f"{bucket.id}.jpg"
+            new_bytes = snap.getvalue()
+            if not have_photo or dest.read_bytes() != new_bytes:
+                dest.write_bytes(new_bytes)
+                bucket.context_image_path = dest
+                db.update_bucket(bucket)
+                st.success("Saved the container photo.")
+                st.rerun()
+
+
 def _scan_and_progress(bucket) -> None:
     """Scan button + progress handler. Reruns the page on completion."""
     if not st.button("🟢 Scan Stack", type="primary", use_container_width=True, help="Runs the scanner and adds everything in the feeder to this bucket. Load the next stack and press again to keep going."):
@@ -175,6 +212,7 @@ def main() -> None:
     if bucket.helper_name:
         st.caption(f"Scanned by {bucket.helper_name}")
 
+    _container_photo(bucket, db)
     _scan_and_progress(bucket)
     _show_scan_errors()
 
