@@ -112,6 +112,19 @@ streamlit run app.py
 photopipe --help
 ```
 
+### Multi-account helper setup (same Mac)
+
+The server binds to localhost only (see `.streamlit/config.toml`) and has no
+login, so the intended multi-user setup is **one machine, one server, run by
+the owner's account** — other macOS accounts use it through the browser:
+
+1. Keep the app running under the owner's account (a launchd LaunchAgent
+   works well; the owner can stay fast-user-switched away, just logged in).
+2. From the helper's account, open `http://localhost:8501/?mode=helper` —
+   the `mode=helper` parameter lands that browser session directly in
+   Helper Mode (the bare scan screen). `?mode=owner` is the explicit opt-out.
+3. All files and the database stay owned by the owner's account.
+
 ## Workflow
 
 PhotoPipe has two modes:

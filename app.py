@@ -60,7 +60,12 @@ def init_session_state():
         st.session_state.watcher_running = False
 
     if "helper_mode" not in st.session_state:
-        st.session_state.helper_mode = False
+        # ?mode=helper lets a helper's bookmark/launcher land straight in the
+        # bare scan UI (session state is per browser session, so the owner's
+        # sidebar toggle can't reach other users' sessions). ?mode=owner
+        # explicitly opts out.
+        mode = st.query_params.get("mode", "")
+        st.session_state.helper_mode = mode == "helper"
 
 
 def main():

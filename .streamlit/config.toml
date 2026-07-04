@@ -1,0 +1,12 @@
+# Bind to localhost: PhotoPipe has no login, so exposing it to the LAN means
+# anyone on the network can drive the scanner and edit the archive. Same-machine
+# user accounts (e.g. a dedicated helper/scanning account) can still reach it
+# at http://localhost:8501. Set address = "0.0.0.0" deliberately if you want
+# LAN access (the Docker image already does, via its CMD).
+[server]
+address = "127.0.0.1"
+port = 8501
+headless = true
+
+[browser]
+gatherUsageStats = false
