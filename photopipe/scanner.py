@@ -210,6 +210,22 @@ class Scanner:
         Returns:
             List of ScanResult objects for each scanned photo
         """
+        if not self.device_name:
+            # Auto-detect may have found nothing at construction (scanner
+            # asleep / just powered on) — try once more before giving up
+            # with a message a human can act on, instead of letting
+            # "scanimage -d None" blow up inside subprocess.
+            fastfoto = find_fastfoto()
+            if fastfoto:
+                self.device_name = fastfoto.name
+            else:
+                raise RuntimeError(
+                    "No scanner found. Check that the FastFoto is powered on and "
+                    "awake, and that Local Network permission is granted "
+                    "(System Settings → Privacy & Security → Local Network). "
+                    "Run 'photopipe doctor' in a terminal for a full diagnosis."
+                )
+
         output_folder.mkdir(parents=True, exist_ok=True)
 
         if self._use_python_sane:

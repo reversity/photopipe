@@ -191,9 +191,16 @@ def capture_batch(
     errors: list[str] = []
 
     emit("scanning", message="Scanning stack...")
-    files = scan_to_folder(
-        device=scanner_device, resolution=resolution, duplex=duplex, errors=errors
-    )
+    try:
+        files = scan_to_folder(
+            device=scanner_device, resolution=resolution, duplex=duplex, errors=errors
+        )
+    except RuntimeError as e:
+        # Scanner unreachable / no device: a routine failure for the helper,
+        # not a crash — surface it through the normal error channel.
+        msg = str(e)
+        emit("done", message=msg)
+        return CaptureResult(photos_added=0, bucket_id=bucket.id, errors=[msg])
     if not files:
         msg = "Scanner returned no files"
         emit("done", message=msg)

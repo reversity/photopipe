@@ -121,3 +121,21 @@ def test_capture_extracts_date_from_ocr_when_present(db, bucket, tmp_path):
     photos = db.get_photos_by_bucket(bucket.id)
     assert photos[0].extracted_date == date(1985, 6, 15)
     assert photos[0].date_source == "ocr_back"
+
+
+def test_scan_batch_without_device_raises_clear_error(monkeypatch, tmp_path):
+    from photopipe import scanner as scanner_mod
+    from photopipe.scanner import Scanner
+
+    monkeypatch.setattr(scanner_mod, "find_fastfoto", lambda: None)
+    s = Scanner(device_name=None)
+    with pytest.raises(RuntimeError, match="No scanner found"):
+        s.scan_batch(output_folder=tmp_path, name_prefix="photo")
+
+
+def test_capture_surfaces_scanner_unreachable_as_error(db, bucket):
+    with patch("photopipe.capture_pipeline.scan_to_folder") as scan:
+        scan.side_effect = RuntimeError("No scanner found. Check that ...")
+        result = capture_batch(bucket, db=db, scanner_device=None)
+    assert result.photos_added == 0
+    assert result.errors and "No scanner found" in result.errors[0]
