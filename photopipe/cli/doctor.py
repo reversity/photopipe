@@ -37,6 +37,35 @@ def check_sane() -> Check:
 def check_scanner_discovery() -> Check:
     if not shutil.which("scanimage"):
         return Check("Scanner discovery", False, "scanimage not installed")
+
+    # A pinned device (scanner.device in config) is probed directly —
+    # `scanimage -L` relies on mDNS autodiscovery, which fails on networks
+    # where a direct connection to the scanner works fine.
+    device = get_config().scanner.device
+    if device:
+        try:
+            r = subprocess.run(
+                ["scanimage", "-d", device, "-A"],
+                capture_output=True, text=True, timeout=20,
+            )
+            ok = r.returncode == 0
+            return Check(
+                "Scanner (pinned device)", ok,
+                detail=f"{device}: {'reachable' if ok else (r.stderr.strip() or 'not reachable')}",
+                fix=(
+                    "Check the scanner is powered on and its IP hasn't changed "
+                    f"(config pins {device}); update scanner.device in "
+                    "~/.photopipe/config.yaml if it moved."
+                ) if not ok else None,
+            )
+        except subprocess.TimeoutExpired:
+            return Check(
+                "Scanner (pinned device)", False,
+                f"probe of {device} timed out (20s)",
+                fix="Scanner may be asleep or its IP changed; check power and "
+                    "scanner.device in ~/.photopipe/config.yaml.",
+            )
+
     try:
         r = subprocess.run(
             ["scanimage", "-L"], capture_output=True, text=True, timeout=5
@@ -48,13 +77,17 @@ def check_scanner_discovery() -> Check:
             fix=(
                 "On macOS Tahoe (26+), grant 'Local Network' permission to your "
                 "terminal app in System Settings → Privacy & Security → Local Network. "
-                "Tahoe periodically drops this permission silently after updates."
+                "Tahoe periodically drops this permission silently after updates. "
+                "If the scanner's IP is known, pin it: scanner.device: "
+                "epsonds:net:<ip> in ~/.photopipe/config.yaml."
             ) if not found_any else None,
         )
     except subprocess.TimeoutExpired:
         return Check(
             "Scanner discovery", False, "scanimage -L timed out (5s)",
-            fix="Network scanner may be unreachable, or Local Network permission missing.",
+            fix="Network scanner may be unreachable, or Local Network permission "
+                "missing. If the scanner's IP is known, pin it: scanner.device: "
+                "epsonds:net:<ip> in ~/.photopipe/config.yaml.",
         )
 
 
