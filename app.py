@@ -59,13 +59,18 @@ def init_session_state():
     if "watcher_running" not in st.session_state:
         st.session_state.watcher_running = False
 
-    if "helper_mode" not in st.session_state:
-        # ?mode=helper lets a helper's bookmark/launcher land straight in the
-        # bare scan UI (session state is per browser session, so the owner's
-        # sidebar toggle can't reach other users' sessions). ?mode=owner
-        # explicitly opts out.
-        mode = st.query_params.get("mode", "")
-        st.session_state.helper_mode = mode == "helper"
+    # An explicit ?mode= in the URL is AUTHORITATIVE on every load, not just
+    # the first — so relaunching the PhotoPipe Scanner app (?mode=helper)
+    # always returns a helper to the bare scan UI even if someone previously
+    # tapped "Exit Helper Mode" in that browser. Session state is otherwise
+    # per browser session, so the owner's toggle can't reach other users.
+    mode = st.query_params.get("mode", "")
+    if mode == "helper":
+        st.session_state.helper_mode = True
+    elif mode == "owner":
+        st.session_state.helper_mode = False
+    elif "helper_mode" not in st.session_state:
+        st.session_state.helper_mode = False
 
 
 def main():

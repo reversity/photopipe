@@ -185,6 +185,9 @@ def _owner_exit_footer() -> None:
         st.caption("Leave Helper Mode and return to the full owner view.")
         if st.button("Exit Helper Mode"):
             st.session_state.helper_mode = False
+            # Write mode=owner so a ?mode=helper still in the URL (from the
+            # launcher) doesn't immediately snap back to helper mode.
+            st.query_params["mode"] = "owner"
             st.switch_page("app.py")
 
 
