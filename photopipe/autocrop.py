@@ -20,22 +20,39 @@ from PIL import Image
 from typing import Optional, Tuple
 
 
-def _read_exif_bytes(path: Path) -> Optional[bytes]:
-    """Read the raw EXIF block from an image so a re-save can preserve it."""
+def _read_image_meta(path: Path) -> tuple[Optional[bytes], Optional[tuple]]:
+    """Read the EXIF block and DPI from an image so a re-save can preserve both.
+
+    Scanner JPEGs store the scan resolution in the JFIF density header (PIL's
+    ``info['dpi']``), NOT in EXIF — so preserving EXIF alone drops the DPI and
+    a re-saved crop reports as 1 pixel/inch. We carry the DPI explicitly.
+    """
     try:
         with Image.open(path) as img:
-            return img.info.get("exif")
+            dpi = img.info.get("dpi")
+            # PIL reports (1, 1) when the source had no real density; treat
+            # that as "unknown" so we can fall back to a sane default.
+            if dpi and (dpi[0] or 0) > 1 and (dpi[1] or 0) > 1:
+                return img.info.get("exif"), (int(round(dpi[0])), int(round(dpi[1])))
+            return img.info.get("exif"), None
     except Exception:
-        return None
+        return None, None
 
 
-def _save_bgr_jpeg(image: np.ndarray, output_path: Path, exif: Optional[bytes]) -> None:
-    """Save an OpenCV BGR array as JPEG, carrying over the source EXIF."""
+def _save_bgr_jpeg(
+    image: np.ndarray,
+    output_path: Path,
+    exif: Optional[bytes],
+    dpi: Optional[tuple],
+) -> None:
+    """Save an OpenCV BGR array as JPEG, carrying over source EXIF and DPI."""
     pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    kwargs = {"quality": 95}
     if exif:
-        pil_img.save(output_path, "JPEG", quality=95, exif=exif)
-    else:
-        pil_img.save(output_path, "JPEG", quality=95)
+        kwargs["exif"] = exif
+    if dpi:
+        kwargs["dpi"] = dpi
+    pil_img.save(output_path, "JPEG", **kwargs)
 
 
 def get_anthropic_api_key() -> Optional[str]:
@@ -374,8 +391,19 @@ def auto_crop_photo(input_path: Path, output_path: Optional[Path] = None) -> boo
             trim_y = (crop_h - new_h) // 2
             cropped = cropped[trim_y:trim_y+new_h, trim_x:trim_x+new_w]
 
-        # Save the cropped image, preserving the scan's EXIF metadata
-        _save_bgr_jpeg(cropped, output_path, _read_exif_bytes(input_path))
+        # Save the cropped image, preserving the scan's EXIF + DPI metadata.
+        # DPI defaults to the configured scan resolution when the source JPEG
+        # carried no usable density (so a crop never reports as 1 px/inch).
+        exif, dpi = _read_image_meta(input_path)
+        if dpi is None:
+            try:
+                from photopipe.config import get_config
+
+                res = int(get_config().scanner.resolution)
+                dpi = (res, res)
+            except Exception:
+                dpi = None
+        _save_bgr_jpeg(cropped, output_path, exif, dpi)
 
         return True
 
@@ -540,11 +568,15 @@ def rotate_photo(input_path: Path, degrees: int) -> bool:
     try:
         with Image.open(input_path) as img:
             exif = img.info.get("exif")
+            dpi = img.info.get("dpi")
             rotated = img.rotate(degrees, expand=True)
+        kwargs = {"quality": 95}
         if exif:
-            rotated.save(input_path, quality=95, exif=exif)
-        else:
-            rotated.save(input_path, quality=95)
+            kwargs["exif"] = exif
+        # Preserve DPI across the rotate re-save (PIL otherwise defaults it to 1)
+        if dpi and (dpi[0] or 0) > 1 and (dpi[1] or 0) > 1:
+            kwargs["dpi"] = (int(round(dpi[0])), int(round(dpi[1])))
+        rotated.save(input_path, **kwargs)
         return True
     except Exception as e:
         print(f"Rotate error: {e}")
