@@ -946,5 +946,7 @@ class Database:
             result = conn.execute(
                 "SELECT MAX(sequence_num) FROM photos WHERE batch_id = ?", (batch_id,)
             ).fetchone()
-            max_seq = result[0] if result and result[0] else 0
+            # MAX is None only when there are no rows; a real MAX of 0 must not
+            # be treated as "no photos" (would mint a duplicate sequence 1).
+            max_seq = result[0] if result and result[0] is not None else 0
             return max_seq + 1

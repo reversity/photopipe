@@ -11,10 +11,28 @@ from photopipe.vlm_client import is_vlm_available
 
 st.set_page_config(page_title="Buckets - PhotoPipe", page_icon="📦", layout="wide")
 
+# Family photos can predate 1900; st.date_input raises if a pre-filled value
+# falls outside [min, max], so bound generously and clamp pre-fills into range.
+MIN_PHOTO_DATE = date(1826, 1, 1)  # oldest surviving photograph
+
+
+def _today() -> date:
+    return date.today()
+
+
+def _clamp_date(d):
+    if d is None:
+        return None
+    if d < MIN_PHOTO_DATE:
+        return MIN_PHOTO_DATE
+    if d > _today():
+        return _today()
+    return d
+
 
 def _iso_to_date(value):
     try:
-        return date.fromisoformat(value) if value else None
+        return _clamp_date(date.fromisoformat(value)) if value else None
     except (ValueError, TypeError):
         return None
 
@@ -169,9 +187,9 @@ def main():
                     name = st.text_input("Batch name", value=defaults["name"], help="Becomes the batch's name everywhere else in the app, including exported filenames. You can rename it later on the Batch Setup page.")
                     c1, c2 = st.columns(2)
                     with c1:
-                        date_start = st.date_input("Date start (optional)", value=defaults["date_start"], min_value=date(1900, 1, 1), help="Earliest date these photos could be from. Gives AI dating a range to work within — leave blank if you have no idea.")
+                        date_start = st.date_input("Date start (optional)", value=defaults["date_start"], min_value=MIN_PHOTO_DATE, max_value=_today(), help="Earliest date these photos could be from. Gives AI dating a range to work within — leave blank if you have no idea.")
                     with c2:
-                        date_end = st.date_input("Date end (optional)", value=defaults["date_end"], min_value=date(1900, 1, 1), help="Latest date these photos could be from. Leave blank if unknown.")
+                        date_end = st.date_input("Date end (optional)", value=defaults["date_end"], min_value=MIN_PHOTO_DATE, max_value=_today(), help="Latest date these photos could be from. Leave blank if unknown.")
                     location = st.text_input("Location (optional)", value=defaults["location"], help="Where the photos were taken, e.g. 'Toledo, OH'. Saved with the batch and later written into each photo's metadata.")
                     people = st.text_input("People (comma-separated, optional)", help="Names of people likely in these photos, e.g. 'Mom, Dad, Grandma Rose'. Tagged onto every photo in the batch.")
                     event = st.text_area("Event description (optional)", value=defaults["event"], height=100 if defaults["event"] else 60, help="Any context you remember — the occasion, kids' ages, who scanned it. An album often spans several events; list them all, the AI uses this to place segment breaks.")

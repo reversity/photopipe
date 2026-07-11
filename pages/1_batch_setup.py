@@ -361,18 +361,29 @@ def edit_batch_form():
         with col1:
             batch_name = st.text_input("Batch Name *", value=batch.name)
 
+            # Bound generously (photos predate 1900) and clamp stored values
+            # into range so st.date_input never raises on an out-of-range date
+            # (e.g. an AI-suggested pre-1900 start or a stray future end).
+            _min_date = date(1826, 1, 1)
+            _today = date.today()
+
+            def _clamp(d):
+                if d is None:
+                    return None
+                return min(max(d, _min_date), _today)
+
             date_start = st.date_input(
                 "Date Range Start",
-                value=batch.date_start,
-                min_value=date(1900, 1, 1),
-                max_value=date.today(),
+                value=_clamp(batch.date_start),
+                min_value=_min_date,
+                max_value=_today,
                 help="Earliest date photos in this batch could be from. Used to bound AI date estimates and written into photo metadata.",
             )
             date_end = st.date_input(
                 "Date Range End",
-                value=batch.date_end,
-                min_value=date(1900, 1, 1),
-                max_value=date.today(),
+                value=_clamp(batch.date_end),
+                min_value=_min_date,
+                max_value=_today,
                 help="Latest date photos in this batch could be from.",
             )
 

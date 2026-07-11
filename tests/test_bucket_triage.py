@@ -135,3 +135,28 @@ class TestBucketRoundTrip:
         loaded = db.get_bucket(bucket.id)
         assert loaded.context_image_path == tmp_path / "cover.jpg"
         assert loaded.suggested_context == {"era_guess": "1970s"}
+
+
+def test_single_ocr_date_widens_not_collapses(db, tmp_path):
+    """One dated back must not collapse a multi-year model range to a day."""
+    bucket = _bucket_with_photos(db, tmp_path, 3, dates=(date(1987, 7, 4), None, None))
+    vlm = MagicMock()
+    vlm.analyze.return_value = _proposal(
+        date_range={"start": "1985-01-01", "end": "1989-12-31"}
+    )
+    result = suggest_bucket_context(bucket, db, vlm_client=vlm)
+    # single OCR date (1987) sits inside the model span, which is preserved
+    assert result["date_range"] == {"start": "1985-01-01", "end": "1989-12-31"}
+    assert result["ocr_date_rollup"]["count"] == 1
+
+
+def test_single_ocr_date_extends_range_when_outside(db, tmp_path):
+    bucket = _bucket_with_photos(db, tmp_path, 2, dates=(date(1975, 5, 1), None))
+    vlm = MagicMock()
+    vlm.analyze.return_value = _proposal(
+        date_range={"start": "1980-01-01", "end": "1982-12-31"}
+    )
+    result = suggest_bucket_context(bucket, db, vlm_client=vlm)
+    # OCR date is earlier than the model start -> range widens to include it
+    assert result["date_range"]["start"] == "1975-05-01"
+    assert result["date_range"]["end"] == "1982-12-31"

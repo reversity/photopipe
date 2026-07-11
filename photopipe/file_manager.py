@@ -14,6 +14,7 @@ from typing import Optional
 from PIL import Image
 
 from photopipe.config import get_config
+from photopipe.logging_config import get_logger
 from photopipe.models import (
     Batch,
     PhotoPair,
@@ -23,6 +24,8 @@ from photopipe.models import (
 )
 from photopipe.database import Database
 from photopipe.metadata import write_metadata
+
+logger = get_logger(__name__)
 
 
 def sanitize_filename(name: str) -> str:
@@ -222,8 +225,13 @@ def finalize_photo(
     if not front_output.exists():
         raise IOError(f"Failed to copy file to: {front_output}")
 
-    # Write metadata to front
-    write_metadata(photo, batch, front_output)
+    # Write metadata to front. A False return means exiftool failed (corrupt
+    # JPEG, permissions) — the file was copied but has no metadata, so surface
+    # it rather than silently marking the photo fully finalized.
+    if not write_metadata(photo, batch, front_output):
+        logger.warning(
+            "metadata write failed for %s (exported without metadata)", front_output
+        )
     photo.output_front_path = front_output
 
     # Handle back image (only if export_backs is True)
@@ -295,8 +303,12 @@ def finalize_batch(
                 photo.final_date = photo.extracted_date
                 photo.needs_review = False
 
-        # Skip photos that still need review (unless finalize_all or auto-approved)
-        if photo.needs_review and not finalize_all and not auto_approve_high_confidence:
+        # Skip photos that still need review. Auto-approve does NOT disable
+        # this gate globally — it only clears needs_review above for the
+        # high-confidence / AI-estimated photos it approved, so a low-confidence
+        # photo the user still wants to review stays skipped (rather than being
+        # finalized with a fabricated batch-default date).
+        if photo.needs_review and not finalize_all:
             continue
 
         # If no final date set, use extracted or batch default

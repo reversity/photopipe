@@ -226,19 +226,30 @@ def capture_batch(
 
     # Snapshot pristine originals before autocrop mutates the scans in place.
     # Archive-at-finalize is too late: a bad crop would otherwise destroy the
-    # only copy of the raw scan.
+    # only copy of the raw scan. Track which sources were actually preserved
+    # so we NEVER autocrop a front whose backup failed (that would leave no
+    # pristine copy of an irreplaceable scan).
+    preserved: set[Path] = set()
     originals_dir = get_config().paths.archive_folder / "_originals" / bucket.id
-    originals_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        originals_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.error("could not create originals dir %s: %s", originals_dir, e)
+        errors.append(f"could not create backup folder: {e}")
     for front, back in pairs:
         for src in (front, back):
             if src is None:
                 continue
             dest = originals_dir / src.name
-            if not dest.exists():
-                try:
-                    shutil.copy2(src, dest)
-                except OSError as e:
-                    errors.append(f"could not preserve original {src.name}: {e}")
+            if dest.exists():
+                preserved.add(src)
+                continue
+            try:
+                shutil.copy2(src, dest)
+                preserved.add(src)
+            except OSError as e:
+                log.warning("could not preserve original %s: %s", src.name, e)
+                errors.append(f"could not preserve original {src.name}: {e}")
 
     emit("processing", total=len(pairs))
     photos: list[PhotoPair] = []
@@ -249,10 +260,18 @@ def capture_batch(
             total=len(pairs),
             message=f"Crop + orient #{i + 1}",
         )
-        try:
-            process_scanned_photo(front, use_ai_orientation=True)
-        except Exception as e:  # autocrop failures are non-fatal
-            errors.append(f"autocrop failed for {front.name}: {e}")
+        # Only crop in place when a pristine backup exists; otherwise leave the
+        # raw scan untouched so no original is ever lost to a failed backup.
+        if front in preserved:
+            try:
+                process_scanned_photo(front, use_ai_orientation=True)
+            except Exception as e:  # autocrop failures are non-fatal
+                log.warning("autocrop failed for %s: %s", front.name, e)
+                errors.append(f"autocrop failed for {front.name}: {e}")
+        else:
+            errors.append(
+                f"kept {front.name} uncropped (its backup could not be saved)"
+            )
 
         photo = PhotoPair(
             bucket_id=bucket.id,
@@ -263,8 +282,12 @@ def capture_batch(
             phase=PhotoPhase.CAPTURED,
             status=PhotoStatus.INGESTED,
         )
-        photos.append(photo)
-        db.create_photo(photo)
+        try:
+            db.create_photo(photo)
+            photos.append(photo)
+        except Exception as e:
+            log.error("failed to persist photo %s: %s", front.name, e)
+            errors.append(f"could not save {front.name} to the library: {e}")
 
     # Handwriting OCR: synchronous per-photo for the MVP. Task 8 swaps in
     # the Batch API. OCR being unavailable (no API key) must not fail the

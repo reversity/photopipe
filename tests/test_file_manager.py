@@ -54,3 +54,33 @@ class TestArchiveCopy:
         assert dest.read_bytes() == b"batch B pixels - different"
         # Batch A's archived copy is untouched
         assert (archive / "photo_0001.jpg").read_bytes() == b"batch A pixels"
+
+
+class TestFinalizeReviewGate:
+    def test_auto_approve_does_not_finalize_low_confidence_review_photos(self, tmp_path, monkeypatch):
+        """auto_approve_high_confidence must only finalize the photos it approved,
+        not every needs-review photo."""
+        from photopipe.database import Database
+        from photopipe.file_manager import finalize_batch
+        from photopipe.models import Batch, PhotoPair, PhotoStatus, DateConfidence
+        from datetime import date
+        import photopipe.file_manager as fm
+
+        db = Database(db_path=tmp_path / "t.db")
+        batch = Batch(name="Mixed", date_start=date(1985, 1, 1), date_end=date(1985, 12, 31))
+        db.create_batch(batch)
+
+        # low-confidence photo still needing review
+        low = PhotoPair(batch_id=batch.id, sequence_num=1,
+                        front_path=tmp_path / "a.jpg", needs_review=True,
+                        date_confidence=DateConfidence.LOW)
+        from PIL import Image
+        Image.new("RGB", (50, 40)).save(low.front_path)
+        db.create_photo(low)
+
+        # Don't actually write files/metadata
+        monkeypatch.setattr(fm, "finalize_photo", lambda p, b, d, **k: p)
+
+        report = finalize_batch(batch, db, auto_approve_high_confidence=True)
+        # the low-confidence review photo is skipped, nothing finalized
+        assert report.photo_count == 0

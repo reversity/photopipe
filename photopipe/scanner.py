@@ -475,6 +475,18 @@ class Scanner:
                     "The scan took too long and was stopped. If the scanner is "
                     "busy or unresponsive, wait a moment and press Scan again."
                 )
+            except FileNotFoundError:
+                # scanimage binary missing / not on PATH
+                log.error("scanimage not found on PATH")
+                raise RuntimeError(
+                    "The scanner software (SANE / scanimage) isn't installed or "
+                    "isn't on the PATH. Ask the owner to run 'brew install "
+                    "sane-backends' and 'photopipe doctor'."
+                )
+            except OSError as e:
+                # Any other failure launching/communicating with the process
+                log.error("scanimage OS error: %s", e)
+                scan_error = classify_scan_error(str(e))
 
             # Ensure output folder exists
             output_folder.mkdir(parents=True, exist_ok=True)

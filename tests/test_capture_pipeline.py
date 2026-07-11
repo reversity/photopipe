@@ -139,3 +139,27 @@ def test_capture_surfaces_scanner_unreachable_as_error(db, bucket):
         result = capture_batch(bucket, db=db, scanner_device=None)
     assert result.photos_added == 0
     assert result.errors and "No scanner found" in result.errors[0]
+
+
+def test_backup_failure_skips_autocrop_preserving_original(db, bucket, tmp_path, monkeypatch):
+    """If the pristine-original backup fails, the raw scan must NOT be autocropped
+    in place (that would destroy the only copy)."""
+    front = tmp_path / "f1.jpg"
+    Image.new("RGB", (800, 600)).save(front)
+
+    from photopipe import capture_pipeline as cp
+    # Force the originals backup to fail
+    monkeypatch.setattr(cp.shutil, "copy2", lambda *a, **k: (_ for _ in ()).throw(OSError("archive full")))
+    proc_called = []
+    monkeypatch.setattr(cp, "process_scanned_photo", lambda *a, **k: proc_called.append(a))
+
+    with patch("photopipe.capture_pipeline.scan_to_folder") as scan, patch(
+        "photopipe.capture_pipeline.HandwritingOCR"
+    ):
+        scan.return_value = [front]
+        result = cp.capture_batch(bucket, db=db, scanner_device=None)
+
+    # photo still ingested, but autocrop was skipped and a warning recorded
+    assert result.photos_added == 1
+    assert proc_called == []
+    assert any("uncropped" in e for e in result.errors)

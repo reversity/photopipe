@@ -186,6 +186,11 @@ def main():
         )
         if helper_mode != st.session_state.get("helper_mode", False):
             st.session_state.helper_mode = helper_mode
+            # Keep the URL's authoritative ?mode= in sync with the toggle,
+            # otherwise a sticky ?mode=owner (left by "Exit Helper Mode") would
+            # be re-applied by init_session_state on the next run and fight the
+            # toggle into a rerun loop.
+            st.query_params["mode"] = "helper" if helper_mode else "owner"
             st.rerun()
 
     # Main content

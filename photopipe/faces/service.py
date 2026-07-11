@@ -198,7 +198,24 @@ class FaceService:
                     f"cannot merge cluster {cid} from batch {other.batch_id} "
                     f"into cluster {keep_id} from batch {keep.batch_id}"
                 )
-        for face in self.db.get_faces_by_batch(keep.batch_id):
+
+        # Record which photos each merged cluster had already tagged, so a stale
+        # keyword doesn't survive the merge. The merged cluster's row is deleted
+        # (taking its propagated_label with it), and propagate_labels only cleans
+        # up surviving clusters — so we strip the stale label here.
+        stale_by_photo: dict[str, set[str]] = {}
+        faces = self.db.get_faces_by_batch(keep.batch_id)
+        for cid in merge_set:
+            merged = self.db.get_face_cluster(cid)
+            if merged is None or not merged.propagated_label:
+                continue
+            for face in faces:
+                if face.cluster_id == cid:
+                    stale_by_photo.setdefault(face.photo_id, set()).add(
+                        merged.propagated_label
+                    )
+
+        for face in faces:
             if face.cluster_id in merge_set:
                 face.cluster_id = keep_id
                 self.db.update_face(face)
@@ -210,6 +227,21 @@ class FaceService:
                     keep.label = cluster.label
                     self.db.update_face_cluster(keep)
                 self.db.delete_face_cluster(cid)
+
+        # Remove each merged cluster's already-applied keyword, except when the
+        # keeper still carries that same name (then it stays valid).
+        keep = self.db.get_face_cluster(keep_id) or keep
+        for photo_id, labels in stale_by_photo.items():
+            labels.discard(keep.label)
+            if not labels:
+                continue
+            photo = self.db.get_photo(photo_id)
+            if photo is None:
+                continue
+            remaining = [k for k in photo.final_keywords if k not in labels]
+            if remaining != list(photo.final_keywords):
+                photo.final_keywords = remaining
+                self.db.update_photo(photo)
 
     def move_face(self, face_id: str, target_cluster_id: str) -> None:
         """Reassign a single face to a different cluster."""

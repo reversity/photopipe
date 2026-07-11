@@ -20,21 +20,47 @@ from PIL import Image
 from typing import Optional, Tuple
 
 
+def _normalize_orientation(exif_bytes: Optional[bytes]) -> Optional[bytes]:
+    """Drop the EXIF Orientation tag from an EXIF block.
+
+    ``cv2.imread`` physically applies the Orientation tag when it decodes, so
+    the pixels we re-save are already display-correct. Re-embedding the
+    original Orientation (e.g. 6) would tell viewers to rotate a second time.
+    Strip it so the saved crop is oriented exactly once.
+    """
+    if not exif_bytes:
+        return exif_bytes
+    try:
+        from PIL import Image as _I
+
+        probe = _I.new("RGB", (1, 1))
+        exif = probe.getexif()
+        exif.load(exif_bytes)
+        if 274 in exif:  # 0x0112 Orientation
+            del exif[274]
+            return exif.tobytes()
+        return exif_bytes
+    except Exception:
+        return exif_bytes
+
+
 def _read_image_meta(path: Path) -> tuple[Optional[bytes], Optional[tuple]]:
     """Read the EXIF block and DPI from an image so a re-save can preserve both.
 
     Scanner JPEGs store the scan resolution in the JFIF density header (PIL's
     ``info['dpi']``), NOT in EXIF — so preserving EXIF alone drops the DPI and
-    a re-saved crop reports as 1 pixel/inch. We carry the DPI explicitly.
+    a re-saved crop reports as 1 pixel/inch. We carry the DPI explicitly, and
+    strip the Orientation tag (cv2 already applied it) to avoid double-rotation.
     """
     try:
         with Image.open(path) as img:
+            exif = _normalize_orientation(img.info.get("exif"))
             dpi = img.info.get("dpi")
             # PIL reports (1, 1) when the source had no real density; treat
             # that as "unknown" so we can fall back to a sane default.
             if dpi and (dpi[0] or 0) > 1 and (dpi[1] or 0) > 1:
-                return img.info.get("exif"), (int(round(dpi[0])), int(round(dpi[1])))
-            return img.info.get("exif"), None
+                return exif, (int(round(dpi[0])), int(round(dpi[1])))
+            return exif, None
     except Exception:
         return None, None
 
@@ -567,7 +593,9 @@ def rotate_photo(input_path: Path, degrees: int) -> bool:
     """
     try:
         with Image.open(input_path) as img:
-            exif = img.info.get("exif")
+            # Strip Orientation: we're rotating the pixels ourselves, so a
+            # leftover tag would make viewers rotate a second time.
+            exif = _normalize_orientation(img.info.get("exif"))
             dpi = img.info.get("dpi")
             rotated = img.rotate(degrees, expand=True)
         kwargs = {"quality": 95}

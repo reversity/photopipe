@@ -169,13 +169,23 @@ def suggest_bucket_context(
         max_tokens=2048,
     )
 
-    # OCR'd dates outrank visual estimates: when the backs gave us a range,
-    # it wins over (or tightens) the model's guess.
-    if rollup["count"]:
+    # OCR'd dates outrank visual estimates, but a single dated back says nothing
+    # about the album's overall span — collapsing a multi-year album to that one
+    # day would be wrong. So:
+    #  - 2+ OCR dates spanning a real range: use it (strong evidence).
+    #  - exactly 1 OCR date: widen the model's estimated range to include it
+    #    rather than replacing the range with a single day.
+    if rollup["earliest"] and rollup["latest"] and rollup["earliest"] != rollup["latest"]:
         proposal["date_range"] = {
             "start": rollup["earliest"],
             "end": rollup["latest"],
         }
+    elif rollup["count"] == 1:
+        dr = proposal.get("date_range") or {}
+        anchor = rollup["earliest"]
+        start = min(x for x in (dr.get("start"), anchor) if x)
+        end = max(x for x in (dr.get("end"), anchor) if x)
+        proposal["date_range"] = {"start": start, "end": end}
 
     proposal["ocr_date_rollup"] = rollup
     proposal["sampled_photos"] = len(sampled)

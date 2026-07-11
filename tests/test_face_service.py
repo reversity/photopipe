@@ -229,3 +229,37 @@ def test_merge_clusters_duplicate_keep_id_is_safe(db, tmp_path):
     svc = FaceService(db, backend=MagicMock(), crop_root=tmp_path / "crops")
     svc.merge_clusters([keep.id, keep.id])
     assert db.get_face_cluster(keep.id) is not None
+
+
+def test_merge_named_into_named_cleans_stale_keyword(db, tmp_path):
+    """Merging Bob's (already-applied) cluster into Rose's must not leave 'Bob'
+    on the photos forever."""
+    from photopipe.models import FaceCluster
+    batch, photos = _batch_with_photos(db, tmp_path, 1)
+
+    # Two named clusters, each with a face on the same photo
+    rose = FaceCluster(batch_id=batch.id, label="Rose", propagated_label="Rose")
+    bob = FaceCluster(batch_id=batch.id, label="Bob", propagated_label="Bob")
+    db.create_face_cluster(rose)
+    db.create_face_cluster(bob)
+
+    from photopipe.faces.detector import DetectedFace
+    from photopipe.models import Face
+    f_rose = Face(photo_id=photos[0].id, batch_id=batch.id, bbox=(0, 0, 5, 5),
+                  embedding=_emb(1), detection_score=0.9, cluster_id=rose.id)
+    f_bob = Face(photo_id=photos[0].id, batch_id=batch.id, bbox=(6, 6, 5, 5),
+                 embedding=_emb(2), detection_score=0.9, cluster_id=bob.id)
+    db.create_face(f_rose)
+    db.create_face(f_bob)
+
+    # Both names already on the photo
+    photo = db.get_photo(photos[0].id)
+    photo.final_keywords = ["Rose", "Bob"]
+    db.update_photo(photo)
+
+    svc = FaceService(db, backend=MagicMock(), crop_root=tmp_path / "crops")
+    svc.merge_clusters([rose.id, bob.id])  # keep Rose, merge Bob
+
+    photo = db.get_photo(photos[0].id)
+    assert "Bob" not in photo.final_keywords
+    assert "Rose" in photo.final_keywords
