@@ -12,6 +12,9 @@ from photopipe.capture_pipeline import capture_batch, CaptureProgress
 from photopipe.config import get_config
 from photopipe.database import Database
 from photopipe.file_manager import generate_thumbnail
+from photopipe.logging_config import setup_logging
+
+setup_logging()
 
 st.set_page_config(
     page_title="Scan Photos",
@@ -111,11 +114,12 @@ def _container_photo(bucket, db) -> None:
                 st.rerun()
 
 
-def _scan_and_progress(bucket) -> None:
-    """Scan button + progress handler. Reruns the page on completion."""
-    if not st.button("🟢 Scan Stack", type="primary", use_container_width=True, help="Runs the scanner and adds everything in the feeder to this bucket. Load the next stack and press again to keep going."):
-        return
+def _run_scan(bucket) -> None:
+    """Run one scan pass with a live progress bar, then rerun the page.
 
+    Shared by the main Scan Stack button and the retry button in the error
+    box, so recovering from a busy/unreachable scanner is a single tap.
+    """
     progress_box = st.empty()
 
     def on_progress(p: CaptureProgress) -> None:
@@ -138,22 +142,44 @@ def _scan_and_progress(bucket) -> None:
             progress=on_progress,
         )
 
-    if result.errors:
-        st.session_state.scan_errors = list(result.errors)
+    # Replace prior errors (a clean retry clears the old message)
+    st.session_state.scan_errors = list(result.errors) if result.errors else []
     if result.photos_added:
         st.success(f"✓ Added {result.photos_added} photos to this bucket")
     st.rerun()
 
 
-def _show_scan_errors() -> None:
-    """Show errors from the last scan, persisted across the post-scan rerun."""
+def _scan_and_progress(bucket) -> None:
+    """Scan Stack button. Reruns the page on completion."""
+    if st.button(
+        "🟢 Scan Stack", type="primary", use_container_width=True,
+        help="Runs the scanner and adds everything in the feeder to this bucket. "
+             "Load the next stack and press again to keep going.",
+    ):
+        _run_scan(bucket)
+
+
+def _show_scan_errors(bucket) -> None:
+    """Show the last scan's errors with a prominent retry, persisted across
+    the post-scan rerun.
+
+    Retrying is the fix for the common field failure: another device on the
+    network grabbed the scanner. The message already says to wait ~30s, so a
+    one-tap "Try scanning again" here keeps the helper unblocked without
+    needing to find the Scan Stack button.
+    """
     if not st.session_state.scan_errors:
         return
     for err in st.session_state.scan_errors:
-        st.error(err)
-    if st.button("Dismiss errors"):
-        st.session_state.scan_errors = []
-        st.rerun()
+        st.warning(f"⚠️ {err}")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Try scanning again", type="primary", use_container_width=True):
+            _run_scan(bucket)
+    with col2:
+        if st.button("Dismiss", use_container_width=True):
+            st.session_state.scan_errors = []
+            st.rerun()
 
 
 def _thumbnail_grid(photos) -> None:
@@ -217,7 +243,7 @@ def main() -> None:
 
     _container_photo(bucket, db)
     _scan_and_progress(bucket)
-    _show_scan_errors()
+    _show_scan_errors(bucket)
 
     photos = db.get_photos_by_bucket(bucket.id)
     _thumbnail_grid(photos)

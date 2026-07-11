@@ -9,7 +9,10 @@ from pathlib import Path
 
 from photopipe.config import get_config, reload_config
 from photopipe.database import Database
+from photopipe.logging_config import setup_logging
 from photopipe.setup import is_setup_complete, load_settings
+
+setup_logging()
 
 
 # Page configuration

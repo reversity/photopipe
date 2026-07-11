@@ -8,12 +8,62 @@ using the python-sane library or scanimage command-line tool.
 import subprocess
 import tempfile
 import shutil
+import time
 from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from photopipe.config import get_config
+from photopipe.logging_config import get_logger
+
+log = get_logger(__name__)
+
+
+# A network scanner (epsonds:net) can only be driven by one client at a time.
+# When another computer or phone on the network (Epson ScanSmart, Smart Panel,
+# the mobile app) has claimed it, SANE fails with one of these — surface a
+# clear "wait and retry" message instead of the raw driver error.
+_BUSY_MARKERS = (
+    "device busy",
+    "error during device i/o",
+    "resource busy",
+    "in use",
+    "device i/o error",
+    "operation not supported",  # some epsonds builds emit this when locked
+)
+_UNREACHABLE_MARKERS = (
+    "invalid argument",
+    "failed to open",
+    "network",
+    "no such device",
+    "timeout",
+    "timed out",
+    "connection",
+    "unreachable",
+    "host is down",
+)
+
+
+def classify_scan_error(stderr: str) -> str:
+    """Turn raw scanimage stderr into a helper-friendly, actionable message."""
+    s = (stderr or "").lower()
+    if any(m in s for m in _BUSY_MARKERS):
+        return (
+            "The scanner is busy — another computer or phone on the network is "
+            "using it (for example Epson ScanSmart or the Epson Smart Panel app). "
+            "Close that app, wait about 30 seconds for the scanner to free up, "
+            "then press Scan again."
+        )
+    if any(m in s for m in _UNREACHABLE_MARKERS):
+        return (
+            "Couldn't reach the scanner. Make sure it's powered on and awake and "
+            "on the same network, then press Scan again. If it keeps failing, ask "
+            "the owner to check the connection."
+        )
+    if "jam" in s:
+        return "Paper jam. Clear the feeder and press Scan again."
+    return stderr.strip() or "The scan failed for an unknown reason. Try again."
 
 
 @dataclass
@@ -218,7 +268,9 @@ class Scanner:
             fastfoto = find_fastfoto()
             if fastfoto:
                 self.device_name = fastfoto.name
+                log.info("auto-detected scanner: %s", fastfoto.name)
             else:
+                log.error("scan_batch: no scanner device (auto-detect found none)")
                 raise RuntimeError(
                     "No scanner found. Check that the FastFoto is powered on and "
                     "awake, and that Local Network permission is granted "
@@ -380,6 +432,11 @@ class Scanner:
             batch_pattern = str(temp_path / "scan_%04d.jpg")
             cmd = base_cmd + [f"--batch={batch_pattern}"]
 
+            log.info(
+                "scan start: device=%s res=%d mode=%s duplex=%s cmd=%s",
+                self.device_name, resolution, mode, duplex, " ".join(cmd),
+            )
+            started = time.monotonic()
             scan_error = None
             try:
                 process = subprocess.Popen(
@@ -391,6 +448,11 @@ class Scanner:
 
                 # Wait for completion
                 stdout, stderr = process.communicate(timeout=600)
+                elapsed = time.monotonic() - started
+                log.info(
+                    "scanimage exited rc=%s in %.1fs; stderr=%r",
+                    process.returncode, elapsed, (stderr or "").strip()[:500],
+                )
 
                 # Check for errors, but don't fail immediately - we may have partial results
                 if process.returncode != 0:
@@ -398,23 +460,28 @@ class Scanner:
                     # These are acceptable "errors" - scanning completed normally
                     if "out of documents" in stderr_lower or "no more documents" in stderr_lower:
                         pass  # Normal end of batch
-                    elif "jammed" in stderr_lower or "jam" in stderr_lower:
-                        # Jam occurred - save error but continue to process scanned files
-                        scan_error = "Paper jam detected"
                     else:
-                        # Unknown error - still try to save any scanned files
-                        scan_error = stderr.strip()
+                        # Classify (paper jam, busy device, unreachable, …) into
+                        # a message the helper can act on.
+                        scan_error = classify_scan_error(stderr)
+                        log.warning("scan failed: %s", scan_error)
 
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate()
-                scan_error = "Scanning timed out"
+                elapsed = time.monotonic() - started
+                log.error("scanimage timed out after %.0fs; killed", elapsed)
+                scan_error = (
+                    "The scan took too long and was stopped. If the scanner is "
+                    "busy or unresponsive, wait a moment and press Scan again."
+                )
 
             # Ensure output folder exists
             output_folder.mkdir(parents=True, exist_ok=True)
 
             # Process scanned files (even if there was an error, we may have partial results)
             scanned_files = sorted(temp_path.glob("scan_*.jpg"))
+            log.info("scanimage produced %d raw file(s)", len(scanned_files))
 
             if duplex:
                 # In duplex mode, files alternate: front, back, front, back...
@@ -467,13 +534,16 @@ class Scanner:
             # raising behavior.
             if scan_error and results:
                 msg = f"{scan_error} (saved {len(results)} photos before error)"
+                log.warning("scan partial: %s", msg)
                 if error_sink is not None:
                     error_sink.append(msg)
                 else:
                     raise RuntimeError(msg)
             elif scan_error and not results:
+                log.warning("scan yielded no photos: %s", scan_error)
                 raise RuntimeError(scan_error)
 
+        log.info("scan complete: %d photo(s)", len(results))
         return results
 
     def scan_single(

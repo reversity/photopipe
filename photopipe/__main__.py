@@ -310,6 +310,9 @@ def cmd_status(args):
 
 def main():
     """Main CLI entry point."""
+    from photopipe.logging_config import setup_logging
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         prog="photopipe",
         description="PhotoPipe - Photo Scanning Metadata Pipeline",

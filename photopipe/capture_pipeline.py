@@ -25,6 +25,7 @@ from typing import Callable, Optional
 from photopipe.config import get_config
 from photopipe.database import Database
 from photopipe.handwriting_ocr import HandwritingOCR
+from photopipe.logging_config import get_logger
 from photopipe.models import (
     Bucket,
     DateSource,
@@ -33,6 +34,8 @@ from photopipe.models import (
     PhotoStatus,
 )
 from photopipe.scanner import Scanner
+
+log = get_logger(__name__)
 
 
 def process_scanned_photo(
@@ -190,6 +193,10 @@ def capture_batch(
 
     errors: list[str] = []
 
+    log.info(
+        "capture_batch start: bucket=%s label=%r device=%r res=%s duplex=%s",
+        bucket.id, bucket.label, scanner_device, resolution, duplex,
+    )
     emit("scanning", message="Scanning stack...")
     try:
         files = scan_to_folder(
@@ -199,6 +206,7 @@ def capture_batch(
         # Scanner unreachable / no device: a routine failure for the helper,
         # not a crash — surface it through the normal error channel.
         msg = str(e)
+        log.warning("capture_batch scan failed for bucket=%s: %s", bucket.id, msg)
         emit("done", message=msg)
         return CaptureResult(photos_added=0, bucket_id=bucket.id, errors=[msg])
     if not files:
@@ -290,9 +298,14 @@ def capture_batch(
                     db.update_photo(photo)
                 except Exception as e:
                     msg = f"OCR failed for #{i + 1}: {e}"
+                    log.warning("bucket=%s %s", bucket.id, msg)
                     errors.append(msg)
                     emit("ocr_error", message=msg)
 
+    log.info(
+        "capture_batch done: bucket=%s added=%d errors=%d",
+        bucket.id, len(photos), len(errors),
+    )
     emit("done", total=len(photos), current=len(photos))
     return CaptureResult(
         photos_added=len(photos), bucket_id=bucket.id, errors=errors
