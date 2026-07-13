@@ -251,3 +251,15 @@ def test_resume_once_guard(db, monkeypatch):
     cp.resume_pending_processing_once(db)
     cp.resume_pending_processing_once(db)
     assert len(calls) == 1
+
+
+def test_bucket_input_dir_is_per_bucket(db):
+    from photopipe.capture_pipeline import _bucket_input_dir
+    from photopipe.bucket_service import BucketService
+    b1 = BucketService(db).open_bucket(label="Erin's Photos")
+    b2 = BucketService(db).open_bucket(label="Erin's Photos")  # same label
+    d1 = _bucket_input_dir(b1)
+    d2 = _bucket_input_dir(b2)
+    assert d1 != d2  # same label, different bucket -> different folder
+    assert "Erin" in d1.name and b1.id[:8] in d1.name
+    assert d1.exists()

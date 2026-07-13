@@ -298,6 +298,18 @@ def scan_to_folder(
     return files
 
 
+def _bucket_input_dir(bucket: Bucket) -> Path:
+    """Per-bucket scan folder so the Scanner_Input view is divided by stack,
+    e.g. ``Scanner_Input/Erin_Photos_ccb6edf5/``. The short id suffix keeps
+    same-labelled buckets separate."""
+    from photopipe.file_manager import sanitize_filename
+
+    safe = sanitize_filename(bucket.label) or "bucket"
+    folder = get_config().paths.input_folder / f"{safe}_{bucket.id[:8]}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 def pair_fronts_and_backs(files: list[Path]) -> list[tuple[Path, Optional[Path]]]:
     """Pair an interleaved scanner output list into (front, back) tuples.
 
@@ -406,7 +418,8 @@ def _capture_locked(
     emit("scanning", message="Scanning stack...")
     try:
         files = scan_to_folder(
-            device=scanner_device, resolution=resolution, duplex=duplex, errors=errors
+            device=scanner_device, resolution=resolution, duplex=duplex,
+            output_folder=_bucket_input_dir(bucket), errors=errors,
         )
     except RuntimeError as e:
         # Scanner unreachable / no device: a routine failure for the helper,
