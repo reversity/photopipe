@@ -12,6 +12,7 @@ from photopipe.migrations import (
     _002_faces,
     _003_propagated_label,
     _004_bucket_context,
+    _005_processing_status,
 )
 
 MIGRATIONS = [
@@ -19,6 +20,7 @@ MIGRATIONS = [
     _002_faces,
     _003_propagated_label,
     _004_bucket_context,
+    _005_processing_status,
 ]
 
 

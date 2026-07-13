@@ -334,8 +334,9 @@ class Database:
                     status, needs_review, review_notes,
                     output_front_path, output_back_path, created_at, updated_at,
                     bucket_id, phase,
-                    handwriting_ocr_text, handwriting_ocr_provider, handwriting_ocr_confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    handwriting_ocr_text, handwriting_ocr_provider, handwriting_ocr_confidence,
+                    processing_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     photo.id,
@@ -368,6 +369,7 @@ class Database:
                     photo.handwriting_ocr_text,
                     photo.handwriting_ocr_provider,
                     photo.handwriting_ocr_confidence,
+                    photo.processing_status,
                 ),
             )
         return photo
@@ -448,7 +450,7 @@ class Database:
                     output_front_path = ?, output_back_path = ?, updated_at = ?,
                     bucket_id = ?, phase = ?,
                     handwriting_ocr_text = ?, handwriting_ocr_provider = ?,
-                    handwriting_ocr_confidence = ?
+                    handwriting_ocr_confidence = ?, processing_status = ?
                 WHERE id = ?
                 """,
                 (
@@ -477,6 +479,7 @@ class Database:
                     photo.handwriting_ocr_text,
                     photo.handwriting_ocr_provider,
                     photo.handwriting_ocr_confidence,
+                    photo.processing_status,
                     photo.id,
                 ),
             )
@@ -489,6 +492,21 @@ class Database:
             conn.execute("DELETE FROM faces WHERE photo_id = ?", (photo_id,))
             result = conn.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
             return result.rowcount > 0
+
+    def get_photos_pending_processing(self) -> list[PhotoPair]:
+        """Photos whose background processing (crop/orient/OCR) never finished.
+
+        Used to resume work interrupted by a restart. Ordered oldest-first.
+        """
+        with self.connection() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+            if "processing_status" not in cols:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM photos WHERE processing_status = 'pending' "
+                "ORDER BY created_at"
+            ).fetchall()
+        return [self._row_to_photo(row) for row in rows]
 
     def get_batch_photo_count(self, batch_id: str) -> int:
         """Get the count of photos in a batch."""
@@ -554,6 +572,10 @@ class Database:
         handwriting_conf = (
             row["handwriting_ocr_confidence"] if "handwriting_ocr_confidence" in cols else None
         )
+        processing_status = (
+            row["processing_status"] if "processing_status" in cols and row["processing_status"]
+            else "done"
+        )
 
         return PhotoPair(
             id=row["id"],
@@ -573,6 +595,7 @@ class Database:
             final_keywords=json.loads(row["final_keywords"]) if row["final_keywords"] else [],
             status=PhotoStatus(row["status"]),
             phase=phase,
+            processing_status=processing_status,
             bucket_id=bucket_id,
             needs_review=bool(row["needs_review"]),
             review_notes=row["review_notes"],

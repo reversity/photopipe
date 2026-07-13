@@ -190,6 +190,9 @@ class PhotoPair(BaseModel):
     bucket_id: Optional[str] = None
     needs_review: bool = False
     review_notes: Optional[str] = None
+    # Background post-processing (autocrop/orient/OCR): "pending" until the
+    # background worker finishes, then "done". Resumed on startup if interrupted.
+    processing_status: str = "done"
 
     # Handwriting OCR (from rebuild pipeline)
     handwriting_ocr_text: Optional[str] = None

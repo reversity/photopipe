@@ -48,6 +48,7 @@ log = get_logger(__name__)
 _bg_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pp-capture-bg")
 _bg_lock = threading.Lock()
 _bg_pending: dict[str, int] = {}  # bucket_id -> photos still being processed
+_resumed = False  # process-level guard so resume runs only once per server
 
 
 def background_pending(bucket_id: str) -> int:
@@ -87,46 +88,110 @@ def _bg_finish_one(bucket_id: str) -> None:
             _bg_pending.pop(bucket_id, None)
 
 
-def _process_captured_photos(bucket_id: str, db_path, jobs: list) -> None:
-    """Background: autocrop/orient each front (when its backup was saved) and
-    OCR each back, updating the DB. Best-effort — every failure is logged, none
-    raise. Runs in the background worker thread, so it uses its own Database
-    (fresh sqlite connections) and never touches Streamlit.
+def _original_path_for(bucket_id: str, front_path: Path) -> Optional[Path]:
+    """The pristine backup of a front, if it exists."""
+    original = get_config().paths.archive_folder / "_originals" / bucket_id / front_path.name
+    return original if original.exists() else None
+
+
+def _process_one_photo(db: Database, bucket_id: str, photo, ocr) -> None:
+    """Crop/orient the front (from its pristine original, so re-running is safe)
+    and OCR the back, then mark the photo done. Best-effort; failures logged."""
+    # Autocrop from the ORIGINAL into the working front path. Cropping from the
+    # pristine copy (not the possibly-already-cropped working file) makes this
+    # idempotent, so a resumed/retried run can't double-crop.
+    original = _original_path_for(bucket_id, photo.front_path)
+    if original is not None:
+        try:
+            process_scanned_photo(
+                original, output_path=photo.front_path, use_ai_orientation=True
+            )
+        except Exception as e:
+            log.warning("bg autocrop failed for %s: %s", photo.front_path, e)
+
+    if photo.back_path and ocr is not None:
+        try:
+            result = ocr.ocr_back(photo.back_path)
+            photo.handwriting_ocr_text = result.text
+            photo.handwriting_ocr_provider = result.provider
+            photo.handwriting_ocr_confidence = result.confidence
+            if result.extracted_date:
+                photo.extracted_date = result.extracted_date
+                photo.date_source = DateSource.OCR_BACK
+        except Exception as e:
+            log.warning("bg OCR failed for %s: %s", photo.back_path, e)
+
+    photo.processing_status = "done"
+    try:
+        db.update_photo(photo)
+    except Exception as e:
+        log.error("bg could not mark photo %s done: %s", photo.id, e)
+
+
+def _process_captured_photos(bucket_id: str, db_path, photos: list) -> None:
+    """Background: process each just-captured photo, updating the DB. Runs in the
+    background worker thread with its own Database; never touches Streamlit.
     """
     db = Database(db_path)
-    ocr = None
-    ocr_tried = False
-    for photo, can_crop in jobs:
+    ocr = _make_ocr(photos)
+    for photo in photos:
         try:
-            if can_crop:
-                try:
-                    process_scanned_photo(photo.front_path, use_ai_orientation=True)
-                except Exception as e:
-                    log.warning("bg autocrop failed for %s: %s", photo.front_path, e)
-
-            if photo.back_path:
-                if not ocr_tried:
-                    ocr_tried = True
-                    try:
-                        ocr = HandwritingOCR()
-                    except Exception as e:
-                        log.warning("bg handwriting OCR unavailable: %s", e)
-                        ocr = None
-                if ocr is not None:
-                    try:
-                        result = ocr.ocr_back(photo.back_path)
-                        photo.handwriting_ocr_text = result.text
-                        photo.handwriting_ocr_provider = result.provider
-                        photo.handwriting_ocr_confidence = result.confidence
-                        if result.extracted_date:
-                            photo.extracted_date = result.extracted_date
-                            photo.date_source = DateSource.OCR_BACK
-                        db.update_photo(photo)
-                    except Exception as e:
-                        log.warning("bg OCR failed for %s: %s", photo.back_path, e)
+            _process_one_photo(db, bucket_id, photo, ocr)
         finally:
             _bg_finish_one(bucket_id)
     log.info("background processing complete for bucket=%s", bucket_id)
+
+
+def _make_ocr(photos):
+    """Construct one HandwritingOCR if any photo has a back; else None."""
+    if not any(p.back_path for p in photos):
+        return None
+    try:
+        return HandwritingOCR()
+    except Exception as e:
+        log.warning("bg handwriting OCR unavailable: %s", e)
+        return None
+
+
+def resume_pending_processing(db: Database) -> int:
+    """Re-enqueue any photos whose background processing was interrupted.
+
+    Called on app startup so a restart mid-backlog doesn't leave scans
+    permanently un-cropped and their backs unread. Cropping from the pristine
+    original makes re-processing idempotent, and OCR is naturally repeatable.
+    Returns the number of photos re-queued.
+    """
+    pending = db.get_photos_pending_processing()
+    if not pending:
+        return 0
+    # Group by bucket so the UI's per-bucket "finishing N" counter is right.
+    by_bucket: dict[str, list] = {}
+    for photo in pending:
+        by_bucket.setdefault(photo.bucket_id or "", []).append(photo)
+    for bucket_id, photos in by_bucket.items():
+        _bg_add(bucket_id, len(photos))
+        _bg_executor.submit(_process_captured_photos, bucket_id, db.db_path, photos)
+    log.info("resumed background processing for %d interrupted photo(s)", len(pending))
+    return len(pending)
+
+
+def resume_pending_processing_once(db: Database) -> int:
+    """Run :func:`resume_pending_processing` at most once per server process.
+
+    Safe to call from every page load / session start — the guard means only
+    the first call (after a server start) actually re-enqueues, so pending
+    photos aren't double-submitted on later reruns.
+    """
+    global _resumed
+    with _bg_lock:
+        if _resumed:
+            return 0
+        _resumed = True
+    try:
+        return resume_pending_processing(db)
+    except Exception as e:  # never let resume break app startup
+        log.error("resume_pending_processing failed: %s", e)
+        return 0
 
 
 def process_scanned_photo(
@@ -379,11 +444,11 @@ def _capture_locked(
     # helper can immediately scan the next stack.
     emit("saving", message=f"Saving {len(pairs)} photos...")
     photos: list[PhotoPair] = []
-    jobs: list[tuple[PhotoPair, bool]] = []
     for i, (front, back) in enumerate(pairs):
         if front not in preserved:
             # Backup failed — keep the raw scan untouched (no autocrop) so no
             # original is ever lost; it's still ingested and its back still OCR'd.
+            # (The background derives "can crop" from the original's existence.)
             errors.append(
                 f"kept {front.name} uncropped (its backup could not be saved)"
             )
@@ -396,23 +461,23 @@ def _capture_locked(
             back_path=back,
             phase=PhotoPhase.CAPTURED,
             status=PhotoStatus.INGESTED,
+            processing_status="pending",  # background worker flips to "done"
         )
         try:
             db.create_photo(photo)
             photos.append(photo)
-            jobs.append((photo, front in preserved))
         except Exception as e:
             log.error("failed to persist photo %s: %s", front.name, e)
             errors.append(f"could not save {front.name} to the library: {e}")
 
-    if jobs:
-        _bg_add(bucket.id, len(jobs))
-        _bg_executor.submit(_process_captured_photos, bucket.id, db.db_path, jobs)
+    if photos:
+        _bg_add(bucket.id, len(photos))
+        _bg_executor.submit(_process_captured_photos, bucket.id, db.db_path, photos)
 
     log.info(
         "capture_batch foreground done: bucket=%s added=%d errors=%d "
-        "(%d queued for background processing)",
-        bucket.id, len(photos), len(errors), len(jobs),
+        "(queued for background processing)",
+        bucket.id, len(photos), len(errors),
     )
     emit(
         "done", total=len(photos), current=len(photos),

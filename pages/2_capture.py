@@ -46,6 +46,9 @@ def init_state() -> None:
     if "db" not in st.session_state:
         get_config().ensure_directories()
         st.session_state.db = Database()
+        # Resume any capture post-processing interrupted by a restart (once/proc)
+        from photopipe.capture_pipeline import resume_pending_processing_once
+        resume_pending_processing_once(st.session_state.db)
     if "current_bucket_id" not in st.session_state:
         st.session_state.current_bucket_id = None
     if "helper_name" not in st.session_state:

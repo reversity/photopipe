@@ -203,3 +203,51 @@ def test_ocr_runs_in_background_not_foreground(db, bucket, tmp_path):
 
     assert db.get_photos_by_bucket(bucket.id)[0].handwriting_ocr_text == "1985"
     assert background_pending(bucket.id) == 0
+
+
+def test_resume_reprocesses_interrupted_photos(db, bucket, tmp_path, monkeypatch):
+    """A photo left 'pending' by an interrupted run is picked up and finished."""
+    from photopipe import capture_pipeline as cp
+    from photopipe.models import PhotoPair, PhotoPhase, PhotoStatus
+
+    # Simulate a photo persisted by a capture whose background never ran
+    front = tmp_path / "photo_0001.jpg"
+    Image.new("RGB", (400, 300)).save(front)
+    back = tmp_path / "photo_0001_b.jpg"
+    Image.new("RGB", (400, 300)).save(back)
+    photo = PhotoPair(
+        bucket_id=bucket.id, batch_id="", sequence_num=1,
+        front_path=front, back_path=back,
+        phase=PhotoPhase.CAPTURED, status=PhotoStatus.INGESTED,
+        processing_status="pending",
+    )
+    db.create_photo(photo)
+    assert db.get_photos_pending_processing()  # one pending
+
+    # Stub the heavy work; OCR fills in a date
+    monkeypatch.setattr(cp, "process_scanned_photo", lambda *a, **k: None)
+    inst = MagicMock()
+    inst.ocr_back.return_value = MagicMock(
+        text="1985", confidence=0.9, provider="mistral", extracted_date=None
+    )
+    monkeypatch.setattr(cp, "HandwritingOCR", lambda *a, **k: inst)
+
+    n = cp.resume_pending_processing(db)
+    assert n == 1
+    assert cp.wait_for_background()
+
+    reloaded = db.get_photo(photo.id)
+    assert reloaded.processing_status == "done"
+    assert reloaded.handwriting_ocr_text == "1985"
+    assert db.get_photos_pending_processing() == []
+
+
+def test_resume_once_guard(db, monkeypatch):
+    """resume_pending_processing_once only runs the first time per process."""
+    from photopipe import capture_pipeline as cp
+    monkeypatch.setattr(cp, "_resumed", False)
+    calls = []
+    monkeypatch.setattr(cp, "resume_pending_processing", lambda d: calls.append(1) or 0)
+    cp.resume_pending_processing_once(db)
+    cp.resume_pending_processing_once(db)
+    assert len(calls) == 1
