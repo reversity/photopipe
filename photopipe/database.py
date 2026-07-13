@@ -441,6 +441,7 @@ class Database:
                 """
                 UPDATE photos SET
                     batch_id = ?,
+                    front_path = ?, back_path = ?,
                     ocr_text_back = ?, ocr_confidence = ?, ocr_raw_results = ?,
                     extracted_date = ?, date_source = ?, date_confidence = ?,
                     ai_analysis = ?, final_date = ?, final_location_lat = ?,
@@ -455,6 +456,8 @@ class Database:
                 """,
                 (
                     photo.batch_id,
+                    str(photo.front_path),
+                    str(photo.back_path) if photo.back_path else None,
                     photo.ocr_text_back,
                     photo.ocr_raw_results.get("confidence") if photo.ocr_raw_results else None,
                     json.dumps(photo.ocr_raw_results) if photo.ocr_raw_results else None,

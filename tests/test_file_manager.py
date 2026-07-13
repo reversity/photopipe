@@ -84,3 +84,21 @@ class TestFinalizeReviewGate:
         report = finalize_batch(batch, db, auto_approve_high_confidence=True)
         # the low-confidence review photo is skipped, nothing finalized
         assert report.photo_count == 0
+
+
+def test_update_photo_persists_path_change(tmp_path):
+    """update_photo must save front_path/back_path (regression: it silently
+    dropped them, so a file move left the DB pointing at the old location)."""
+    from photopipe.database import Database
+    from photopipe.models import PhotoPair
+    db = Database(db_path=tmp_path / "t.db")
+    photo = PhotoPair(batch_id="b", sequence_num=1,
+                      front_path=tmp_path / "old" / "f.jpg",
+                      back_path=tmp_path / "old" / "f_b.jpg")
+    db.create_photo(photo)
+    photo.front_path = tmp_path / "new" / "f.jpg"
+    photo.back_path = tmp_path / "new" / "f_b.jpg"
+    db.update_photo(photo)
+    reloaded = db.get_photo(photo.id)
+    assert str(reloaded.front_path).endswith("new/f.jpg")
+    assert str(reloaded.back_path).endswith("new/f_b.jpg")
