@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -36,6 +38,95 @@ from photopipe.models import (
 from photopipe.scanner import Scanner, ScannerBusy, scanner_session
 
 log = get_logger(__name__)
+
+
+# Autocrop + AI orientation + handwriting OCR are slow (seconds per photo) and
+# DON'T touch the scanner, so they run AFTER the scanner lock is released, in a
+# single background worker. The helper can scan the next stack immediately;
+# processing catches up in order. One worker keeps API load bounded and avoids
+# any file/DB races between overlapping captures.
+_bg_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pp-capture-bg")
+_bg_lock = threading.Lock()
+_bg_pending: dict[str, int] = {}  # bucket_id -> photos still being processed
+
+
+def background_pending(bucket_id: str) -> int:
+    """How many just-captured photos are still processing in the background."""
+    with _bg_lock:
+        return _bg_pending.get(bucket_id, 0)
+
+
+def wait_for_background(timeout: float = 15.0) -> bool:
+    """Block until all queued background processing has finished.
+
+    For tests and headless CLI runs (the Streamlit UI never blocks on this).
+    Returns True if drained, False on timeout.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        with _bg_lock:
+            if not _bg_pending:
+                return True
+        _time.sleep(0.02)
+    return False
+
+
+def _bg_add(bucket_id: str, n: int) -> None:
+    with _bg_lock:
+        _bg_pending[bucket_id] = _bg_pending.get(bucket_id, 0) + n
+
+
+def _bg_finish_one(bucket_id: str) -> None:
+    with _bg_lock:
+        remaining = _bg_pending.get(bucket_id, 0) - 1
+        if remaining > 0:
+            _bg_pending[bucket_id] = remaining
+        else:
+            _bg_pending.pop(bucket_id, None)
+
+
+def _process_captured_photos(bucket_id: str, db_path, jobs: list) -> None:
+    """Background: autocrop/orient each front (when its backup was saved) and
+    OCR each back, updating the DB. Best-effort — every failure is logged, none
+    raise. Runs in the background worker thread, so it uses its own Database
+    (fresh sqlite connections) and never touches Streamlit.
+    """
+    db = Database(db_path)
+    ocr = None
+    ocr_tried = False
+    for photo, can_crop in jobs:
+        try:
+            if can_crop:
+                try:
+                    process_scanned_photo(photo.front_path, use_ai_orientation=True)
+                except Exception as e:
+                    log.warning("bg autocrop failed for %s: %s", photo.front_path, e)
+
+            if photo.back_path:
+                if not ocr_tried:
+                    ocr_tried = True
+                    try:
+                        ocr = HandwritingOCR()
+                    except Exception as e:
+                        log.warning("bg handwriting OCR unavailable: %s", e)
+                        ocr = None
+                if ocr is not None:
+                    try:
+                        result = ocr.ocr_back(photo.back_path)
+                        photo.handwriting_ocr_text = result.text
+                        photo.handwriting_ocr_provider = result.provider
+                        photo.handwriting_ocr_confidence = result.confidence
+                        if result.extracted_date:
+                            photo.extracted_date = result.extracted_date
+                            photo.date_source = DateSource.OCR_BACK
+                        db.update_photo(photo)
+                    except Exception as e:
+                        log.warning("bg OCR failed for %s: %s", photo.back_path, e)
+        finally:
+            _bg_finish_one(bucket_id)
+    log.info("background processing complete for bucket=%s", bucket_id)
 
 
 def process_scanned_photo(
@@ -282,24 +373,17 @@ def _capture_locked(
                 log.warning("could not preserve original %s: %s", src.name, e)
                 errors.append(f"could not preserve original {src.name}: {e}")
 
-    emit("processing", total=len(pairs))
+    # Foreground: persist a raw row per photo FAST, then hand the slow work
+    # (autocrop + AI orientation + OCR) to the background worker. This releases
+    # the scanner as soon as the physical scan + DB writes are done, so the
+    # helper can immediately scan the next stack.
+    emit("saving", message=f"Saving {len(pairs)} photos...")
     photos: list[PhotoPair] = []
+    jobs: list[tuple[PhotoPair, bool]] = []
     for i, (front, back) in enumerate(pairs):
-        emit(
-            "processing",
-            current=i + 1,
-            total=len(pairs),
-            message=f"Crop + orient #{i + 1}",
-        )
-        # Only crop in place when a pristine backup exists; otherwise leave the
-        # raw scan untouched so no original is ever lost to a failed backup.
-        if front in preserved:
-            try:
-                process_scanned_photo(front, use_ai_orientation=True)
-            except Exception as e:  # autocrop failures are non-fatal
-                log.warning("autocrop failed for %s: %s", front.name, e)
-                errors.append(f"autocrop failed for {front.name}: {e}")
-        else:
+        if front not in preserved:
+            # Backup failed — keep the raw scan untouched (no autocrop) so no
+            # original is ever lost; it's still ingested and its back still OCR'd.
             errors.append(
                 f"kept {front.name} uncropped (its backup could not be saved)"
             )
@@ -316,51 +400,27 @@ def _capture_locked(
         try:
             db.create_photo(photo)
             photos.append(photo)
+            jobs.append((photo, front in preserved))
         except Exception as e:
             log.error("failed to persist photo %s: %s", front.name, e)
             errors.append(f"could not save {front.name} to the library: {e}")
 
-    # Handwriting OCR: synchronous per-photo for the MVP. Task 8 swaps in
-    # the Batch API. OCR being unavailable (no API key) must not fail the
-    # capture — the photos are already scanned and persisted.
-    if any(photo.back_path for photo in photos):
-        ocr = None
-        try:
-            ocr = HandwritingOCR()
-        except Exception as e:
-            msg = f"Handwriting OCR skipped: {e}"
-            errors.append(msg)
-            emit("ocr_error", message=msg)
-        if ocr is not None:
-            for i, photo in enumerate(photos):
-                if not photo.back_path:
-                    continue
-                emit(
-                    "ocr",
-                    current=i + 1,
-                    total=len(photos),
-                    message=f"OCR back #{i + 1}",
-                )
-                try:
-                    result = ocr.ocr_back(photo.back_path)
-                    photo.handwriting_ocr_text = result.text
-                    photo.handwriting_ocr_provider = result.provider
-                    photo.handwriting_ocr_confidence = result.confidence
-                    if result.extracted_date:
-                        photo.extracted_date = result.extracted_date
-                        photo.date_source = DateSource.OCR_BACK
-                    db.update_photo(photo)
-                except Exception as e:
-                    msg = f"OCR failed for #{i + 1}: {e}"
-                    log.warning("bucket=%s %s", bucket.id, msg)
-                    errors.append(msg)
-                    emit("ocr_error", message=msg)
+    if jobs:
+        _bg_add(bucket.id, len(jobs))
+        _bg_executor.submit(_process_captured_photos, bucket.id, db.db_path, jobs)
 
     log.info(
-        "capture_batch done: bucket=%s added=%d errors=%d",
-        bucket.id, len(photos), len(errors),
+        "capture_batch foreground done: bucket=%s added=%d errors=%d "
+        "(%d queued for background processing)",
+        bucket.id, len(photos), len(errors), len(jobs),
     )
-    emit("done", total=len(photos), current=len(photos))
+    emit(
+        "done", total=len(photos), current=len(photos),
+        message=(
+            f"Added {len(photos)} photos. Cropping and reading them in the "
+            "background — you can scan the next stack now."
+        ),
+    )
     return CaptureResult(
         photos_added=len(photos), bucket_id=bucket.id, errors=errors
     )

@@ -8,7 +8,11 @@ or AI dating. The owner curates the buckets into real batches later.
 import streamlit as st
 
 from photopipe.bucket_service import BucketService
-from photopipe.capture_pipeline import capture_batch, CaptureProgress
+from photopipe.capture_pipeline import (
+    capture_batch,
+    CaptureProgress,
+    background_pending,
+)
 from photopipe.config import get_config
 from photopipe.database import Database
 from photopipe.file_manager import generate_thumbnail
@@ -265,6 +269,13 @@ def main() -> None:
     _container_photo(bucket, db)
     _scan_and_progress(bucket)
     _show_scan_errors(bucket)
+
+    # Background processing runs after each scan (crop + orient + read backs).
+    # It doesn't hold the scanner, so scanning the next stack is not blocked —
+    # this is just an informational note.
+    pending = background_pending(bucket.id)
+    if pending:
+        st.caption(f"⚙️ Finishing up {pending} photo(s) in the background — you can keep scanning.")
 
     photos = db.get_photos_by_bucket(bucket.id)
     _thumbnail_grid(photos)

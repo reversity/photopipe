@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from photopipe.bucket_service import BucketService
-from photopipe.capture_pipeline import CaptureProgress, capture_batch
+from photopipe.capture_pipeline import CaptureProgress, capture_batch, wait_for_background
 from photopipe.database import Database
 
 
@@ -42,6 +42,7 @@ def test_capture_writes_photos_with_captured_phase(db, bucket, tmp_path):
         )
         ocr_cls.return_value = ocr_instance
         result = capture_batch(bucket, db=db, scanner_device="fake", duplex=True)
+        assert wait_for_background()  # OCR runs in the background now
 
     assert result.photos_added == 1
     photos = db.get_photos_by_bucket(bucket.id)
@@ -117,6 +118,7 @@ def test_capture_extracts_date_from_ocr_when_present(db, bucket, tmp_path):
         )
         ocr_cls.return_value = ocr_instance
         capture_batch(bucket, db=db, scanner_device="fake", duplex=True)
+        assert wait_for_background()
 
     photos = db.get_photos_by_bucket(bucket.id)
     assert photos[0].extracted_date == date(1985, 6, 15)
@@ -158,8 +160,46 @@ def test_backup_failure_skips_autocrop_preserving_original(db, bucket, tmp_path,
     ):
         scan.return_value = [front]
         result = cp.capture_batch(bucket, db=db, scanner_device=None)
+        assert cp.wait_for_background()
 
-    # photo still ingested, but autocrop was skipped and a warning recorded
+    # photo still ingested, but autocrop was skipped (backup failed) and a
+    # warning recorded — the background worker must not crop it either.
     assert result.photos_added == 1
     assert proc_called == []
     assert any("uncropped" in e for e in result.errors)
+
+
+def test_ocr_runs_in_background_not_foreground(db, bucket, tmp_path):
+    """capture_batch returns before OCR has run; the background worker fills it in."""
+    from photopipe.capture_pipeline import background_pending
+    front = tmp_path / "f1.jpg"
+    Image.new("RGB", (400, 400)).save(front)
+    back = tmp_path / "f1_b.jpg"
+    Image.new("RGB", (400, 400)).save(back)
+
+    import threading
+    ocr_gate = threading.Event()
+
+    def slow_ocr_back(path):
+        ocr_gate.wait(timeout=5)  # hold OCR so we can observe the foreground return
+        return MagicMock(text="1985", confidence=0.9, provider="mistral", extracted_date=None)
+
+    with patch("photopipe.capture_pipeline.scan_to_folder") as scan, patch(
+        "photopipe.capture_pipeline.process_scanned_photo"
+    ), patch("photopipe.capture_pipeline.HandwritingOCR") as ocr_cls:
+        scan.return_value = [front, back]
+        inst = MagicMock()
+        inst.ocr_back.side_effect = slow_ocr_back
+        ocr_cls.return_value = inst
+
+        result = capture_batch(bucket, db=db, scanner_device="fake", duplex=True)
+        # Foreground returned immediately: row exists, OCR NOT done yet
+        assert result.photos_added == 1
+        assert background_pending(bucket.id) == 1
+        assert db.get_photos_by_bucket(bucket.id)[0].handwriting_ocr_text is None
+
+        ocr_gate.set()
+        assert wait_for_background()
+
+    assert db.get_photos_by_bucket(bucket.id)[0].handwriting_ocr_text == "1985"
+    assert background_pending(bucket.id) == 0

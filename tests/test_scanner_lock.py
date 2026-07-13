@@ -63,6 +63,7 @@ def test_second_capture_refused_while_first_holds_scanner(db, bucket, monkeypatc
 
     release.set()
     t.join(timeout=5)
+    cp.wait_for_background()  # let the (patched) background work drain
     assert results["first"].photos_added == 1  # first completed normally
     assert scanner_in_use() is False
 
@@ -75,3 +76,4 @@ def test_lock_released_after_capture(db, bucket, monkeypatch, tmp_path):
     monkeypatch.setattr(cp, "HandwritingOCR", lambda *a, **k: (_ for _ in ()).throw(Exception("no ocr")))
     cp.capture_batch(bucket, db=db, scanner_device="dev")
     assert scanner_in_use() is False  # a second stack can now start
+    cp.wait_for_background()
