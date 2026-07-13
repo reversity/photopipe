@@ -100,11 +100,13 @@ def _process_one_photo(db: Database, bucket_id: str, photo, ocr) -> None:
     # Autocrop from the ORIGINAL into the working front path. Cropping from the
     # pristine copy (not the possibly-already-cropped working file) makes this
     # idempotent, so a resumed/retried run can't double-crop.
+    cfg = get_config().autocrop
     original = _original_path_for(bucket_id, photo.front_path)
-    if original is not None:
+    if cfg.enabled and original is not None:
         try:
             process_scanned_photo(
-                original, output_path=photo.front_path, use_ai_orientation=True
+                original, output_path=photo.front_path,
+                use_ai_orientation=cfg.ai_orientation,
             )
         except Exception as e:
             log.warning("bg autocrop failed for %s: %s", photo.front_path, e)
@@ -173,6 +175,23 @@ def resume_pending_processing(db: Database) -> int:
         _bg_executor.submit(_process_captured_photos, bucket_id, db.db_path, photos)
     log.info("resumed background processing for %d interrupted photo(s)", len(pending))
     return len(pending)
+
+
+def reprocess_bucket(db: Database, bucket_id: str) -> int:
+    """Re-run crop/deskew/OCR for a bucket from its pristine originals.
+
+    Lets the owner apply improved processing (e.g. the new deskew) to photos
+    already captured. Only photos whose original was preserved can be re-cropped;
+    returns how many were re-queued.
+    """
+    photos = db.get_photos_by_bucket(bucket_id)
+    to_do = [p for p in photos if _original_path_for(bucket_id, p.front_path)]
+    if not to_do:
+        return 0
+    _bg_add(bucket_id, len(to_do))
+    _bg_executor.submit(_process_captured_photos, bucket_id, db.db_path, to_do)
+    log.info("reprocessing %d photo(s) in bucket=%s from originals", len(to_do), bucket_id)
+    return len(to_do)
 
 
 def resume_pending_processing_once(db: Database) -> int:

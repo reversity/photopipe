@@ -126,6 +126,25 @@ def main():
                 # bucket.status is already a string thanks to use_enum_values
                 st.write(f"**Status:** {bucket.status}")
 
+            # Re-run crop/deskew from the pristine originals (e.g. to apply the
+            # improved deskew to already-scanned photos).
+            from photopipe.capture_pipeline import reprocess_bucket, background_pending
+            pending = background_pending(bucket.id)
+            if pending:
+                st.caption(f"⚙️ Re-processing {pending} photo(s) in the background…")
+            elif st.button(
+                "🔄 Re-crop from originals", key=f"reproc_{bucket.id}",
+                help="Re-runs auto-crop/deskew on this bucket's photos from their "
+                     "untouched originals, applying the current settings. Safe to "
+                     "run repeatedly — it always works from the pristine copy.",
+            ):
+                n = reprocess_bucket(db, bucket.id)
+                if n:
+                    st.success(f"Re-processing {n} photos in the background…")
+                    st.rerun()
+                else:
+                    st.warning("No pristine originals found for this bucket (older scans).")
+
             # Container photo (album cover / envelope) + thumbnail strip
             photos = db.get_photos_by_bucket(bucket.id)
             if bucket.context_image_path and bucket.context_image_path.exists():

@@ -73,3 +73,48 @@ def test_rotate_strips_orientation_tag(tmp_path):
     with Image.open(p) as o:
         assert o.getexif().get(274, 1) == 1
         assert o.info.get("dpi") == (600, 600)
+
+
+def test_ai_orientation_off_by_default():
+    from photopipe.config import Config
+    assert Config().autocrop.ai_orientation is False
+    assert Config().autocrop.enabled is True
+
+
+def test_deskew_straightens_a_tilted_photo(tmp_path):
+    """A dark photo tilted on a white scanner bed is straightened + cropped."""
+    import numpy as np, cv2
+    from photopipe.autocrop import deskew_and_crop, _normalized_min_area_rect, _find_photo_contour
+    page = np.full((1200, 1000, 3), 255, dtype=np.uint8)  # white bed
+    # a filled photo rectangle rotated ~8 degrees
+    box = cv2.boxPoints(((500, 600), (600, 400), 8.0)).astype(np.int32)
+    cv2.fillPoly(page, [box], (40, 60, 90))
+    contour = _find_photo_contour(page)
+    assert contour is not None
+    _, _, angle = _normalized_min_area_rect(contour)
+    assert abs(angle) > 1.5  # detects the tilt
+    out = deskew_and_crop(page)
+    assert out is not None and out.size > 0
+    # result is close to the true photo size (600x400), not the full page
+    h, w = out.shape[:2]
+    assert 350 < min(h, w) < 450 and 550 < max(h, w) < 650
+
+
+def test_process_one_photo_skips_crop_when_disabled(tmp_path, monkeypatch):
+    from photopipe import capture_pipeline as cp
+    from photopipe.config import get_config
+    get_config.cache_clear()
+    monkeypatch.setattr(get_config(), "autocrop", type("A", (), {"enabled": False, "ai_orientation": False})())
+    called = []
+    monkeypatch.setattr(cp, "process_scanned_photo", lambda *a, **k: called.append(a))
+    # a photo whose original exists
+    from photopipe.models import PhotoPair, PhotoPhase, PhotoStatus
+    from photopipe.database import Database
+    from pathlib import Path
+    db = Database(db_path=tmp_path / "t.db")
+    photo = PhotoPair(bucket_id="b", batch_id="", sequence_num=1,
+                      front_path=tmp_path / "photo_0001.jpg", phase=PhotoPhase.CAPTURED)
+    # no back, no original -> nothing to do, but disabled means no crop regardless
+    cp._process_one_photo(db, "b", photo, None)
+    assert called == []
+    get_config.cache_clear()

@@ -361,9 +361,85 @@ def detect_photo_by_color(image: np.ndarray) -> Optional[Tuple[int, int, int, in
     return (x_min, y_min, w, h)
 
 
+def _scan_dpi() -> Optional[tuple]:
+    """The configured scan resolution as a DPI tuple (fallback for saves)."""
+    try:
+        from photopipe.config import get_config
+
+        res = int(get_config().scanner.resolution)
+        return (res, res)
+    except Exception:
+        return None
+
+
+def _find_photo_contour(image: np.ndarray):
+    """Find the outer contour of the photo on the (near-white) scanner bed.
+
+    Returns the largest non-background contour, or None. Works on a raw
+    full-page scan; unreliable on an already-cropped image (the photo fills
+    the frame), which is why deskew must run from the pristine original.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    mask = (gray < 245).astype(np.uint8) * 255
+    # Close gaps within the photo, then drop small speckle from dust/edges.
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((25, 25), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    c = max(contours, key=cv2.contourArea)
+    page_area = image.shape[0] * image.shape[1]
+    if cv2.contourArea(c) < page_area * 0.02:
+        return None
+    return c
+
+
+def _normalized_min_area_rect(contour):
+    """minAreaRect with the angle mapped to the smallest straightening rotation.
+
+    Returns (center, (w, h), angle) with angle in [-45, 45], or None.
+    """
+    (cx, cy), (rw, rh), angle = cv2.minAreaRect(contour)
+    if rw < 20 or rh < 20:
+        return None
+    if angle < -45:
+        angle += 90
+        rw, rh = rh, rw
+    elif angle > 45:
+        angle -= 90
+        rw, rh = rh, rw
+    return (cx, cy), (rw, rh), angle
+
+
+def deskew_and_crop(image: np.ndarray, max_angle: float = 20.0):
+    """Straighten a tilted photo and crop it out of a full-page scan.
+
+    Rotates the image so the photo is upright, then extracts it — removing the
+    tilt and the white triangular corners a plain axis-aligned crop leaves on a
+    skewed photo. Returns the cropped BGR array, or None if no photo found.
+    """
+    contour = _find_photo_contour(image)
+    if contour is None:
+        return None
+    norm = _normalized_min_area_rect(contour)
+    if norm is None:
+        return None
+    (cx, cy), (rw, rh), angle = norm
+    if abs(angle) > max_angle:  # large angle => bad detection, don't rotate
+        angle = 0.0
+    h, w = image.shape[:2]
+    m = cv2.getRotationMatrix2D((cx, cy), angle, 1.0)
+    rotated = cv2.warpAffine(
+        image, m, (w, h), flags=cv2.INTER_CUBIC, borderValue=(255, 255, 255)
+    )
+    # Trim a hair so any sub-pixel white edge from the rotation is gone.
+    size = (max(1, int(round(rw)) - 4), max(1, int(round(rh)) - 4))
+    return cv2.getRectSubPix(rotated, size, (cx, cy))
+
+
 def auto_crop_photo(input_path: Path, output_path: Optional[Path] = None) -> bool:
     """
-    Auto-crop a scanned image to just the photo region.
+    Auto-crop and deskew a scanned image to just the photo region.
 
     Args:
         input_path: Path to the scanned image
@@ -383,7 +459,21 @@ def auto_crop_photo(input_path: Path, output_path: Optional[Path] = None) -> boo
 
         height, width = image.shape[:2]
 
-        # Try contour-based detection first
+        # If the photo was fed with a meaningful tilt, deskew (straighten) it —
+        # a plain axis-aligned crop would leave it tilted with white corners.
+        # Straight photos skip this and use the proven tight crop below.
+        contour = _find_photo_contour(image)
+        if contour is not None:
+            norm = _normalized_min_area_rect(contour)
+            if norm is not None and abs(norm[2]) >= 1.5:
+                deskewed = deskew_and_crop(image)
+                if deskewed is not None and deskewed.size > 0:
+                    deskewed = trim_scanner_border(deskewed)
+                    exif, dpi = _read_image_meta(input_path)
+                    _save_bgr_jpeg(deskewed, output_path, exif, dpi or _scan_dpi())
+                    return True
+
+        # Straight photo (or deskew not applicable): axis-aligned detection.
         rect = detect_photo_region(image)
 
         # Fall back to color-based detection

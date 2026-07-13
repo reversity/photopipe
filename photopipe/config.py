@@ -97,6 +97,17 @@ class UIConfig(BaseModel):
     thumbnails_per_page: int = 20
 
 
+class AutocropConfig(BaseModel):
+    """Post-scan image processing."""
+    # Auto-crop the photo out of the full-page scan (and deskew a tilt).
+    enabled: bool = True
+    # AI orientation (Claude vision, one call per photo) is unreliable for
+    # ambiguous scenes (skies/landscapes get flipped) and slow/costly, so it's
+    # off by default — photos come out in their fed orientation; rotate them in
+    # review. Set true to re-enable.
+    ai_orientation: bool = False
+
+
 class Config(BaseModel):
     """Main configuration container."""
     paths: PathsConfig = Field(default_factory=PathsConfig)
@@ -106,6 +117,7 @@ class Config(BaseModel):
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
+    autocrop: AutocropConfig = Field(default_factory=AutocropConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "Config":
