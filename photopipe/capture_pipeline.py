@@ -33,7 +33,7 @@ from photopipe.models import (
     PhotoPhase,
     PhotoStatus,
 )
-from photopipe.scanner import Scanner
+from photopipe.scanner import Scanner, ScannerBusy, scanner_session
 
 log = get_logger(__name__)
 
@@ -193,10 +193,41 @@ def capture_batch(
 
     errors: list[str] = []
 
-    log.info(
-        "capture_batch start: bucket=%s label=%r device=%r res=%s duplex=%s",
-        bucket.id, bucket.label, scanner_device, resolution, duplex,
-    )
+    # Refuse to start a second capture while one is already running — otherwise
+    # two `scanimage` processes race the single-client network scanner and the
+    # loser reports "Device busy". This makes it impossible to start a new stack
+    # until the previous one has fully finished.
+    try:
+        with scanner_session():
+            log.info(
+                "capture_batch start: bucket=%s label=%r device=%r res=%s duplex=%s",
+                bucket.id, bucket.label, scanner_device, resolution, duplex,
+            )
+            return _capture_locked(
+                bucket, db=db, scanner_device=scanner_device, resolution=resolution,
+                duplex=duplex, emit=emit, errors=errors,
+            )
+    except ScannerBusy:
+        msg = (
+            "The scanner is still finishing the previous stack. Please wait for "
+            "it to finish (watch the progress above), then press Scan again."
+        )
+        log.warning("capture_batch refused (scanner busy) for bucket=%s", bucket.id)
+        emit("done", message=msg)
+        return CaptureResult(photos_added=0, bucket_id=bucket.id, errors=[msg])
+
+
+def _capture_locked(
+    bucket: Bucket,
+    *,
+    db: Database,
+    scanner_device: str,
+    resolution: int,
+    duplex: bool,
+    emit,
+    errors: list,
+) -> CaptureResult:
+    """The body of :func:`capture_batch`, run while holding the scanner lock."""
     emit("scanning", message="Scanning stack...")
     try:
         files = scan_to_folder(

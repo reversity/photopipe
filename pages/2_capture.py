@@ -13,6 +13,7 @@ from photopipe.config import get_config
 from photopipe.database import Database
 from photopipe.file_manager import generate_thumbnail
 from photopipe.logging_config import setup_logging
+from photopipe.scanner import scanner_in_use
 
 setup_logging()
 
@@ -150,9 +151,25 @@ def _run_scan(bucket) -> None:
 
 
 def _scan_and_progress(bucket) -> None:
-    """Scan Stack button. Reruns the page on completion."""
+    """Scan Stack button. Reruns the page on completion.
+
+    While another capture (this or any other browser tab/account) still holds
+    the scanner, the button is disabled so a second stack can't be started
+    until the previous one has fully finished — otherwise the two collide on
+    the single-client network scanner and one gets a "busy" error.
+    """
+    busy = scanner_in_use()
+    if busy:
+        st.info(
+            "⏳ The scanner is busy finishing a stack. Wait for it to complete, "
+            "then press Refresh."
+        )
+        if st.button("🔄 Refresh", use_container_width=True):
+            st.rerun()
+
     if st.button(
         "🟢 Scan Stack", type="primary", use_container_width=True,
+        disabled=busy,
         help="Runs the scanner and adds everything in the feeder to this bucket. "
              "Load the next stack and press again to keep going.",
     ):
@@ -172,9 +189,13 @@ def _show_scan_errors(bucket) -> None:
         return
     for err in st.session_state.scan_errors:
         st.warning(f"⚠️ {err}")
+    busy = scanner_in_use()
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🔄 Try scanning again", type="primary", use_container_width=True):
+        if st.button(
+            "🔄 Try scanning again", type="primary", use_container_width=True,
+            disabled=busy,
+        ):
             _run_scan(bucket)
     with col2:
         if st.button("Dismiss", use_container_width=True):

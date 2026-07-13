@@ -8,7 +8,9 @@ using the python-sane library or scanimage command-line tool.
 import subprocess
 import tempfile
 import shutil
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
@@ -18,6 +20,40 @@ from photopipe.config import get_config
 from photopipe.logging_config import get_logger
 
 log = get_logger(__name__)
+
+
+# The FastFoto is a network scanner only ONE client can drive at a time. This
+# server runs one process serving every browser tab/account, so two overlapping
+# capture runs would launch two `scanimage` processes and the second gets the
+# driver's "Device busy" error. This process-wide lock serializes captures
+# across all sessions: a second attempt is refused fast (see ScannerBusy)
+# instead of racing the scanner.
+_scanner_lock = threading.Lock()
+
+
+class ScannerBusy(Exception):
+    """Raised when a capture is attempted while another one holds the scanner."""
+
+
+def scanner_in_use() -> bool:
+    """True if a capture currently holds the scanner (any session)."""
+    return _scanner_lock.locked()
+
+
+@contextmanager
+def scanner_session():
+    """Hold the process-wide scanner lock for the duration of a capture.
+
+    Non-blocking: raises :class:`ScannerBusy` immediately if another capture is
+    already running, so the caller can tell the user to wait rather than
+    launching a competing scan.
+    """
+    if not _scanner_lock.acquire(blocking=False):
+        raise ScannerBusy()
+    try:
+        yield
+    finally:
+        _scanner_lock.release()
 
 
 # A network scanner (epsonds:net) can only be driven by one client at a time.
