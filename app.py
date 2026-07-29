@@ -90,18 +90,37 @@ def main():
 
     init_session_state()
 
-    # One-shot scanner-discovery check (runs once per session). On macOS
-    # Tahoe (26+) the system silently drops Local Network permission after
-    # updates, which makes networked scanners disappear without warning.
+    # Scanner check, run once per session (it costs a network probe). A
+    # transient failure — the scanner asleep, a busy network, macOS 15+
+    # silently dropping Local Network permission — must not leave a stale
+    # "not detected" banner for the rest of the session, so the banner
+    # carries a "Check again" button that re-probes and clears it.
+    from photopipe.cli.doctor import check_scanner_discovery
+
+    def _run_scanner_check() -> None:
+        check = check_scanner_discovery()
+        st.session_state.scanner_warning = (
+            None if check.ok else (check.fix or check.detail)
+        )
+
     if "scanner_check_done" not in st.session_state:
         st.session_state.scanner_check_done = True
-        from photopipe.cli.doctor import check_scanner_discovery
-        check = check_scanner_discovery()
-        if not check.ok:
-            st.session_state.scanner_warning = check.fix or check.detail
+        _run_scanner_check()
 
     if st.session_state.get("scanner_warning"):
         st.warning(f"⚠️ Scanner not detected. {st.session_state.scanner_warning}")
+        if st.button(
+            "🔄 Check again",
+            help="Re-probe the scanner. Use this after waking it, or if the "
+                 "machine was busy when the app last checked.",
+        ):
+            with st.spinner("Checking the scanner…"):
+                _run_scanner_check()
+            if st.session_state.get("scanner_warning"):
+                st.error("Still can't reach the scanner.")
+            else:
+                st.success("Scanner is reachable.")
+            st.rerun()
 
     # Helper mode short-circuits the home page entirely: a non-owner helper
     # who lands on the app just gets the bare scan screen.
