@@ -9,7 +9,7 @@
 #
 # The FIRST time you run this, macOS may ask to let Terminal find devices on
 # your local network — say YES, or the scanner won't be reachable.
-cd "$(dirname "$0")"
+cd /Users/ash/Developer/PhotoPipe  # absolute: works from Desktop/Dock too
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 LOG="$HOME/Library/Logs/photopipe"
 mkdir -p "$LOG"
