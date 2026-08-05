@@ -40,8 +40,11 @@ def check_scanner_discovery() -> Check:
 
     # A pinned device (scanner.device in config) is probed directly —
     # `scanimage -L` relies on mDNS autodiscovery, which fails on networks
-    # where a direct connection to the scanner works fine.
-    device = get_config().scanner.device
+    # where a direct connection to the scanner works fine. resolve_device
+    # follows the scanner's mDNS name so a new DHCP lease doesn't break us.
+    from photopipe.scanner import resolve_device
+
+    device = resolve_device()
     if device:
         try:
             r = subprocess.run(

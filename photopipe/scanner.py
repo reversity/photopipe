@@ -5,6 +5,7 @@ Provides control of SANE-compatible scanners (including Epson FastFoto FF-680W)
 using the python-sane library or scanimage command-line tool.
 """
 
+import socket
 import subprocess
 import tempfile
 import shutil
@@ -79,6 +80,38 @@ _UNREACHABLE_MARKERS = (
     "unreachable",
     "host is down",
 )
+
+
+def resolve_device(device: Optional[str] = None, mdns_host: Optional[str] = None) -> Optional[str]:
+    """Resolve the SANE device string to use, following the scanner's mDNS name.
+
+    A network scanner's DHCP lease changes (observed here: 192.168.1.62 <-> .63
+    across power cycles), so a pinned ``epsonds:net:<ip>`` silently breaks. When
+    ``mdns_host`` is configured we resolve it to the CURRENT address every time
+    and rewrite the device string; the pinned value is the fallback.
+    """
+    cfg = get_config().scanner
+    device = device if device is not None else cfg.device
+    mdns_host = mdns_host if mdns_host is not None else cfg.mdns_host
+
+    if not mdns_host:
+        return device
+
+    try:
+        ip = socket.gethostbyname(mdns_host)
+    except OSError as e:
+        log.warning("could not resolve scanner mDNS host %s: %s", mdns_host, e)
+        return device
+
+    # Keep the backend prefix from the configured device when we have one
+    # (e.g. "epsonds:net:1.2.3.4" -> "epsonds:net:<resolved>").
+    prefix = "epsonds:net:"
+    if device and ":net:" in device:
+        prefix = device.split(":net:")[0] + ":net:"
+    resolved = f"{prefix}{ip}"
+    if resolved != device:
+        log.info("scanner mDNS %s -> %s (was %r)", mdns_host, resolved, device)
+    return resolved
 
 
 def classify_scan_error(stderr: str) -> str:
@@ -230,7 +263,9 @@ class Scanner:
         Args:
             device_name: SANE device name. If None, auto-detects FastFoto.
         """
-        self.device_name = device_name
+        # Follow the scanner's mDNS name if configured, so a new DHCP lease
+        # doesn't leave us talking to a stale IP.
+        self.device_name = resolve_device(device_name)
         self._sane_device = None
         self._use_python_sane = check_python_sane_available()
 

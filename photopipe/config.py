@@ -44,6 +44,10 @@ class ScannerConfig(BaseModel):
 
     # Scanner hardware settings
     device: Optional[str] = None  # SANE device name, auto-detect if None
+    # Bonjour/mDNS host of a network scanner (e.g. "EPSONFC6BCE.local").
+    # Preferred over a pinned IP in `device`: DHCP can hand the scanner a new
+    # address on any power cycle, and the mDNS name follows it automatically.
+    mdns_host: Optional[str] = None
     resolution: int = 600  # DPI
     mode: str = "color"  # color, gray, lineart
     duplex: bool = True  # Scan front and back
